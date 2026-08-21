@@ -1,0 +1,18 @@
+# T-208 spike: standalone on purpose (outside the workspace) so the heavy
+# lance/datafusion/arrow tree never enters the product build or CI. The
+# deliverable is the findings note; this code exists to reproduce it.
+[package]
+name = "lance-spike"
+version = "0.0.0"
+edition = "2024"
+license = "Apache-2.0"
+
+[dependencies]
+lancedb = "0.37"
+lance-index = "10"
+arrow-array = "58"
+arrow-schema = "58"
+futures = "0.3"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+
+[workspace]
