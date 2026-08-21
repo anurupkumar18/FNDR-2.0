@@ -43,3 +43,7 @@ The cost of Option A is real: no cloud reranking or synthesis quality escape hat
 1. [ ] `cargo deny` config plus the workspace egress lint in CI (repo bootstrap, month 1).
 2. [ ] Adversarial test suite for the safety gate classes (secrets, password managers, banking/medical, blocklist) (month 3).
 3. [ ] `PRIVACY.md` with the verification recipe (month 3, before the demo gate).
+
+## Amendment (2026-08-21, lance transitive HTTP client)
+
+Bringing lancedb into fndr-store (T-202) surfaced one unavoidable transitive HTTP client: lance core hard-depends on lance-namespace, whose REST catalog client embeds reqwest. FNDR never constructs a remote namespace (tables open via local directory URIs only), no feature flag removes it, and forking is not worth the maintenance. Ruling: the cargo-deny ban carries a wrapper scoped to exactly `lance-namespace-reqwest-client`; reqwest under any other parent still fails CI, our own crates remain forbidden direct HTTP by the workspace lint, and the runtime egress posture is unchanged. Revisit at each lancedb upgrade PR; if lance ever feature-gates the namespace client, drop the wrapper.

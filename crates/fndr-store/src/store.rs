@@ -23,6 +23,38 @@ pub struct Store {
     conn: Connection,
 }
 
+/// Capture facts for one record (pipeline stage 8 persists one of these plus
+/// its chunks in a single transaction).
+#[derive(Debug, Clone)]
+pub struct NewRecord {
+    pub id: String,
+    pub session_id: String,
+    pub source: String,
+    pub app_name: String,
+    pub window_title: String,
+    pub captured_at_ms: i64,
+    pub created_at_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct NewChunk {
+    pub id: String,
+    pub ord: i64,
+    pub text: String,
+}
+
+/// A chunk awaiting Lance flush, joined with the record fields that become
+/// prefilter columns.
+#[derive(Debug, Clone)]
+pub struct PendingChunk {
+    pub chunk_id: String,
+    pub record_id: String,
+    pub ord: i64,
+    pub text: String,
+    pub source: String,
+    pub captured_at_ms: i64,
+}
+
 impl Store {
     pub fn open(path: &Path) -> Result<Self, StoreError> {
         Self::init(Connection::open(path)?)
@@ -51,6 +83,87 @@ impl Store {
     #[cfg(test)]
     pub(crate) fn conn(&self) -> &Connection {
         &self.conn
+    }
+
+    /// Persist one capture: record plus chunks, atomically.
+    pub fn insert_capture(
+        &mut self,
+        record: &NewRecord,
+        chunks: &[NewChunk],
+    ) -> Result<(), StoreError> {
+        let tx = self.conn.transaction()?;
+        tx.execute(
+            "INSERT INTO memory_records
+                 (id, session_id, source, app_name, window_title,
+                  captured_at_ms, created_at_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            (
+                &record.id,
+                &record.session_id,
+                &record.source,
+                &record.app_name,
+                &record.window_title,
+                record.captured_at_ms,
+                record.created_at_ms,
+            ),
+        )?;
+        for chunk in chunks {
+            tx.execute(
+                "INSERT INTO chunks (id, record_id, ord, text) VALUES (?1, ?2, ?3, ?4)",
+                (&chunk.id, &record.id, chunk.ord, &chunk.text),
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Chunks not yet flushed to Lance, oldest capture first.
+    pub fn pending_chunks(&self, limit: usize) -> Result<Vec<PendingChunk>, StoreError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT c.id, c.record_id, c.ord, c.text, r.source, r.captured_at_ms
+             FROM chunks c JOIN memory_records r ON r.id = c.record_id
+             WHERE c.flushed_at_ms = 0
+             ORDER BY r.captured_at_ms, c.ord
+             LIMIT ?1",
+        )?;
+        let rows = stmt
+            .query_map([limit as i64], |row| {
+                Ok(PendingChunk {
+                    chunk_id: row.get(0)?,
+                    record_id: row.get(1)?,
+                    ord: row.get(2)?,
+                    text: row.get(3)?,
+                    source: row.get(4)?,
+                    captured_at_ms: row.get(5)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Stamp chunks as flushed. Called only after a successful Lance commit;
+    /// a failed flush leaves rows pending so the next cycle retries.
+    pub fn mark_chunks_flushed(
+        &mut self,
+        chunk_ids: &[String],
+        now_ms: i64,
+    ) -> Result<(), StoreError> {
+        let tx = self.conn.transaction()?;
+        for id in chunk_ids {
+            tx.execute(
+                "UPDATE chunks SET flushed_at_ms = ?1 WHERE id = ?2",
+                (now_ms, id),
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Reset every chunk to pending (the rebuild path re-flushes everything).
+    pub fn reset_flush_state(&mut self) -> Result<usize, StoreError> {
+        Ok(self
+            .conn
+            .execute("UPDATE chunks SET flushed_at_ms = 0", [])?)
     }
 }
 

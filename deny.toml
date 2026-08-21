@@ -13,7 +13,15 @@ targets = ["aarch64-apple-darwin", "x86_64-apple-darwin"]
 [bans]
 multiple-versions = "warn"
 deny = [
-    { crate = "reqwest", wrappers = ["fndr-downloader", "fndr-updater"] },
+    # lance-namespace-reqwest-client is lance core's embedded catalog REST
+    # client; FNDR never constructs a remote namespace (local dir URIs only).
+    # Documented as an explicit ADR-004 exception; reqwest appearing under
+    # any other parent still fails.
+    { crate = "reqwest", wrappers = [
+        "fndr-downloader",
+        "fndr-updater",
+        "lance-namespace-reqwest-client",
+    ] },
     { crate = "ureq", wrappers = ["fndr-downloader", "fndr-updater"] },
     { crate = "curl", wrappers = ["fndr-downloader", "fndr-updater"] },
     { crate = "isahc", wrappers = ["fndr-downloader", "fndr-updater"] },
@@ -33,6 +41,7 @@ allow = [
     "Unicode-3.0",
     "MPL-2.0",
     "CDLA-Permissive-2.0",
+    "BSL-1.0",
 ]
 
 [advisories]

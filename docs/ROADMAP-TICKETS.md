@@ -29,6 +29,7 @@ comment linking the PR).
 | T-108 env bootstrap, four machines | Partial | this machine bare-to-green; scripts/dev-setup.sh for the rest |
 | T-109 walking skeleton | Done 2026-08-20 | PR #4; runner: `cargo run -p fndr-mcp --example skeleton`; findings in journal |
 | T-201 SQLite schema v1 + migrations | Done 2026-08-21 | PR #8; journal 2026-08-21-schema-v1 |
+| T-202 Lance writer with batched flush | Done 2026-08-21 | PR #12; migration 0002; embedding contract seam in fndr-inference |
 | T-208 Lance spike | Done 2026-08-21, GO | PR #10; `docs/spikes/T-208-lance-findings.md`; ADR-002 amended |
 | T-301 textsignal port | Done 2026-08-21 | PR #5 (15 v1 tests) |
 | E05 head start (bench harness) | Skeleton done | PR #6: corpus format, FTS baseline route, regression gate in CI; full FNDR-Bench remains T-501+ |
