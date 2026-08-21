@@ -33,6 +33,7 @@ comment linking the PR).
 | T-208 Lance spike | Done 2026-08-21, GO | PR #10; `docs/spikes/T-208-lance-findings.md`; ADR-002 amended |
 | T-301 textsignal port | Done 2026-08-21 | PR #5 (15 v1 tests) |
 | E05 head start (bench harness) | Skeleton done | PR #6: corpus format, FTS baseline route, regression gate in CI; full FNDR-Bench remains T-501+ |
+| T-801 blocklist v2 | Done 2026-08-21 | PR #13; v1 false-positive classes pinned as tests |
 
 ---
 
