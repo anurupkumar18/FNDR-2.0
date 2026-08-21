@@ -1042,6 +1042,7 @@ dependencies = [
 name = "fndr-store"
 version = "2.0.0-dev"
 dependencies = [
+ "fndr-types",
  "rusqlite",
  "thiserror 2.0.20",
 ]
