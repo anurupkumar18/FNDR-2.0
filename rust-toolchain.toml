@@ -1,0 +1,5 @@
+# Pinned so all four machines and CI build with the same toolchain (T-108).
+# Bump deliberately, in its own PR, with a green `make test`.
+[toolchain]
+channel = "1.98.0"
+components = ["clippy", "rustfmt"]
