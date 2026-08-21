@@ -79,7 +79,7 @@ impl Default for OcrConfig {
             recognition_level: RecognitionLevel::Accurate,
             language_correction: true,
             // Use 0.30 so we collect all Apple Vision confidence values before
-            // per-line filtering — previously 0.50 biased the average upward.
+            // per-line filtering, previously 0.50 biased the average upward.
             min_confidence: 0.30,
             aggressive_filtering: true,
             min_line_length: 7,
@@ -127,7 +127,7 @@ impl OcrConfig {
     }
 }
 
-/// Aggregate stats from OCR preprocessing — stored in memory records.
+/// Aggregate stats from OCR preprocessing, stored in memory records.
 /// Never contains raw OCR text or per-line text.
 #[derive(Debug, Clone, Default)]
 pub struct OcrAggregateStats {
@@ -261,7 +261,7 @@ impl OcrEngine {
 
             let block_count = ocr_stats_from_all.lines_used;
 
-            // raw_lines is dropped here — not stored.
+            // raw_lines is dropped here, not stored.
             Ok((
                 RecognizedText {
                     text: normalized,
@@ -312,8 +312,11 @@ impl OcrEngine {
         handler: &AnyObject,
         request: &AnyObject,
     ) -> Result<(), OcrError> {
-        let request_retained = Retained::retain(request as *const AnyObject as *mut AnyObject)
-            .ok_or_else(|| OcrError::RecognitionError("Failed to retain request".to_string()))?;
+        // Edition 2024 explicit-unsafe blocks added during the port; logic unchanged.
+        let request_retained =
+            unsafe { Retained::retain(request as *const AnyObject as *mut AnyObject) }.ok_or_else(
+                || OcrError::RecognitionError("Failed to retain request".to_string()),
+            )?;
 
         let requests = NSArray::from_id_slice(&[request_retained]);
 
@@ -324,7 +327,7 @@ impl OcrEngine {
             let error_msg = if !error.is_null() {
                 let description: *const NSString = msg_send![error, localizedDescription];
                 if !description.is_null() {
-                    (*description).to_string()
+                    unsafe { (*description).to_string() }
                 } else {
                     "Unknown error".to_string()
                 }
@@ -381,7 +384,7 @@ impl OcrEngine {
 
             let ns_string: *const NSString = msg_send![candidate, string];
             if !ns_string.is_null() {
-                let text = (*ns_string).to_string();
+                let text = unsafe { (*ns_string).to_string() };
                 if !text.trim().is_empty() {
                     lines.push((text, confidence));
                 }
@@ -736,31 +739,31 @@ mod tests {
 
     #[test]
     fn text_volume_qualifies_large_text_screen_typical_confidence() {
-        // 1,459 chars, 38 blocks, confidence 0.49 — real observed pattern, must qualify
+        // 1,459 chars, 38 blocks, confidence 0.49, real observed pattern, must qualify
         assert!(text_volume_qualifies(1459, 0.49, 38));
     }
 
     #[test]
     fn text_volume_qualifies_medium_text_with_blocks() {
-        // 250 chars, 12 blocks, confidence 0.48 — hits the medium-text branch (200+ chars, 10+ blocks)
+        // 250 chars, 12 blocks, confidence 0.48, hits the medium-text branch (200+ chars, 10+ blocks)
         assert!(text_volume_qualifies(250, 0.48, 12));
     }
 
     #[test]
     fn text_volume_qualifies_short_medium_with_high_confidence() {
-        // 150 chars, 6 blocks, confidence 0.60 — hits the short-medium branch
+        // 150 chars, 6 blocks, confidence 0.60, hits the short-medium branch
         assert!(text_volume_qualifies(150, 0.60, 6));
     }
 
     #[test]
     fn text_volume_fails_short_low_confidence() {
-        // 80 chars, 2 blocks, confidence 0.42 — must NOT qualify
+        // 80 chars, 2 blocks, confidence 0.42, must NOT qualify
         assert!(!text_volume_qualifies(80, 0.42, 2));
     }
 
     #[test]
     fn text_volume_fails_tiny_text() {
-        // 30 chars regardless of confidence — must NOT qualify
+        // 30 chars regardless of confidence, must NOT qualify
         assert!(!text_volume_qualifies(30, 0.80, 10));
     }
 
