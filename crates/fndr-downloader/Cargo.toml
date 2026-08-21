@@ -5,3 +5,8 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+# One of the two crates allowed an HTTP client (ADR-004).
+ureq = "3"
+sha2 = "0.10"
+thiserror = "2"
+tracing = "0.1"

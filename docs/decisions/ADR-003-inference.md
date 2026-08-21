@@ -63,3 +63,7 @@ The two-runtime mix accepts one extra moving part (the Swift sidecar) to get the
 ## Amendment (2026-08-20, plan review)
 
 Due diligence corrected two table details (no official Q4 embedder GGUF exists, use Q8_0 at 639 MB; the reranker's trustworthy artifact is the ggml-org conversion) and surfaced the app-side truncate-and-renormalize burden for the 768d contract, now in action item 2 and T-402. A 768-vs-1024 quality ablation runs in month 2 (the truncation is app code, so it must be measured). Qwen3-VL through the llama-cpp-2 mtmd feature is plausible but unproven; the month-1 spike (T-408) converts it into a scheduled decision, and VLM prompts are built via mtmd markers, not the chat-template helper (known-broken upstream). CC-BY-4.0 attribution for Parakeet and pyannote ships in the app's acknowledgements (T-1206).
+
+## Amendment (2026-08-21, registry implementation)
+
+The embedding artifact is now pinned in code (T-401): Qwen/Qwen3-Embedding-0.6B-GGUF, Qwen3-Embedding-0.6B-Q8_0.gguf, 639,150,592 bytes, sha256 06507c7b42688469c4e7298b0a1e16deff06caf291cf0a5b278c308249c3e439. Correction: this ADR referenced a "ggml-org conversion" for Qwen3-Reranker-0.6B, but no repository exists under that name on the Hub. Community conversions exist (for example mradermacher/Qwen3-Reranker-0.6B-GGUF); the ml lane pins source and quant together with the T-506 reranker eval, since the reranker only ships if it wins its ablation anyway.
