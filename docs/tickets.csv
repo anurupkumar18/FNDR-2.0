@@ -1,0 +1,733 @@
+"title","description"
+"T-101 · Bootstrap monorepo workspace and import reference branch","Create the new repo, Cargo workspace plus `ui/` skeleton per ARCHITECTURE §3, and import the POC history as `reference/v1`. AC: workspace builds empty crates; reference branch present and documented as read-only.
+
+deps: none
+
+/label ~""lane::platform"" ~""prio::p0"" ~""epic::E01""
+/milestone %""M1-Foundations"""
+"T-102 · CI test gate on every PR","fmt, clippy, cargo test, vitest, tsc, on macOS runner; also creates the `make test` and `make bench` targets the engineering skill's verification commands assume. AC: a failing test blocks merge; runtime under 15 minutes (the real-model eval lane is separate, T-513).
+
+deps: T-101
+
+/label ~""lane::platform"" ~""prio::p0"" ~""epic::E01""
+/milestone %""M1-Foundations"""
+"T-103 · Local-only egress lint in CI","cargo-deny plus workspace lint banning HTTP client crates outside downloader/updater (ADR-004). AC: adding reqwest to fndr-store fails CI; allowlist constants module has its uniqueness test.
+
+deps: T-101
+
+/label ~""lane::platform"" ~""prio::p0"" ~""epic::E01""
+/milestone %""M1-Foundations"""
+"T-104 · Engine-independent-of-Tauri CI check","AC: any engine crate importing tauri fails CI.
+
+deps: T-101
+
+/label ~""lane::platform"" ~""prio::p0"" ~""epic::E01""
+/milestone %""M1-Foundations"""
+"T-105 · Generated TS bindings pipeline","specta/tauri-specta from fndr-types; hand-written IPC interfaces banned by lint. AC: a sample command's types round-trip into `ui/` at build time.
+
+deps: T-101
+
+/label ~""lane::backend"" ~""prio::p0"" ~""epic::E01""
+/milestone %""M1-Foundations"""
+"T-106 · Repo engineering skill and CONTRIBUTING","Install the v2 engineering skill (.claude/skills/fndr-v2-engineering) into the new repo; document port-provenance, module-size, and session-handoff conventions (who did what, where it stands, next steps, which agent/tool produced it), plus the incidents-and-reversals log (the failure-narrative artifact interviews run on). AC: skill loads in Claude Code; CONTRIBUTING covers the conventions including the handoff format and incidents log.
+
+deps: T-101
+
+/label ~""lane::platform"" ~""prio::p0"" ~""epic::E01""
+/milestone %""M1-Foundations"""
+"T-107 · Cross-tool agent conventions mirror","Generate AGENTS.md (read by Cursor, Codex, and other agent tools) from the fndr-v2-engineering skill so every AI tool follows one conventions source; CI drift check between the two. AC: skill and AGENTS.md agree by construction; reuse-first and port-provenance rules present in both.
+
+deps: T-106
+
+/label ~""lane::platform"" ~""prio::p0"" ~""epic::E01""
+/milestone %""M1-Foundations"""
+"T-108 · Environment bootstrap and dev-install on four machines","Per-builder setup (Rust toolchain, TCC grants for dev builds, model pulls) scripted and documented; dev-install path verified on all four machines; the bench reference machine (M1 8 GB) designated with an owner. AC: a new checkout reaches a running dev build on each machine following only the doc; dogfooding (T-512) is unblocked.
+
+deps: T-101
+
+/label ~""lane::platform"" ~""prio::p0"" ~""epic::E01""
+/milestone %""M1-Foundations"""
+"T-109 · Walking skeleton: thin end-to-end slice","By week 3, deliberately ugly: capture one screen, OCR it, store it, search it, and serve one MCP tool over it. De-risks the M1 spikes in one artifact and gives the earliest honest signal on context usefulness (v1 pain point 1). AC: the slice runs end to end on one machine; findings recorded as tickets or ADR amendments.
+
+deps: T-101
+
+/label ~""lane::backend"" ~""prio::p0"" ~""epic::E01""
+/milestone %""M1-Foundations"""
+"T-201 · SQLite schema v1 and migrations","Split memory domains, chunks, graph, tasks, meetings, queues, settings per ARCHITECTURE §5. AC: migration tests; FK integrity on graph edges; lifecycle enums persisted as discriminants.
+
+deps: T-101
+
+/label ~""lane::backend"" ~""prio::p0"" ~""epic::E02""
+/milestone %""M1-Foundations"""
+"T-202 · Lance writer with batched flush","Single writer module; 30 to 60 s or batch-size flush from SQLite; nothing else writes Lance. AC: flush failure leaves SQLite intact and retries; write-path test.
+
+deps: T-201
+
+/label ~""lane::backend"" ~""prio::p0"" ~""epic::E02""
+/milestone %""M1-Foundations"""
+"T-203 · Vector, FTS, and scalar indexes","Create and maintain indexes on the chunk/record tables; incremental optimize. AC: query plans hit indexes (no full scan) in a 100k-row fixture; point lookups use the scalar index.
+
+deps: T-202
+
+/label ~""lane::backend"" ~""prio::p0"" ~""epic::E02""
+/milestone %""M1-Foundations"""
+"T-204 · Compaction and version-prune scheduler","AC: a 24 h simulated write load keeps version count and small-fragment count bounded; disk returns after prune.
+
+deps: T-202
+
+/label ~""lane::backend"" ~""prio::p0"" ~""epic::E02""
+/milestone %""M1-Foundations"""
+"T-205 · Index rebuild command and crash-recovery test","`fndr index rebuild` from SQLite truth. AC: kill during flush, truth intact, rebuild converges byte-equal on retrieval results.
+
+deps: T-202
+
+/label ~""lane::backend"" ~""prio::p0"" ~""epic::E02""
+/milestone %""M1-Foundations"""
+"T-206 · Deletion everywhere","Delete by record, time range, domain, or all, across both stores and indexes (PRD P0.9). AC: post-delete search, evidence, and graph return nothing; test fixture.
+
+deps: T-201, T-202
+
+/label ~""lane::backend"" ~""prio::p0"" ~""epic::E02""
+/milestone %""M1-Foundations"""
+"T-207 · Retention jobs","Configurable retention windows executing through the deletion path (promoted to p0: the G3 storage budget depends on it). AC: expiry test with clock control.
+
+deps: T-206
+
+/label ~""lane::backend"" ~""prio::p0"" ~""epic::E02""
+/milestone %""M1-Foundations"""
+"T-208 · Spike: Lance FTS, prefilters, and hybrid from Rust","Time-boxed one week: prove BM25 FTS, metadata prefilters, RRF hybrid, and index maintenance from the Rust crate on a 100k-row fixture before T-203/T-505 assumptions harden. AC: findings note with measured behavior; go/no-go on the ADR-002 index design.
+
+deps: T-101
+
+/label ~""lane::backend"" ~""prio::p0"" ~""epic::E02""
+/milestone %""M1-Foundations"""
+"T-209 · Backup, export, and restore","`fndr backup` / `fndr export` / restore: SQLite snapshot plus config (Lance rebuilds from truth, which is the other half of the story); makes ""the memory stays mine"" literal and avoids the live-WAL-in-Time-Machine corruption trap. AC: backup taken under active capture restores to a working vault; export documented.
+
+deps: T-201, T-206
+
+/label ~""lane::backend"" ~""prio::p0"" ~""epic::E02""
+/milestone %""M3-AgentContext"""
+"T-301 · Port fndr-textsignal crate","v1 text_cleanup in full (line scoring, span salience, CUE_WORDS, noise). AC: v1 tests ported and green; provenance notes.
+
+deps: T-101
+
+/label ~""lane::backend"" ~""prio::p0"" ~""epic::E03""
+/milestone %""M1-Foundations"""
+"T-302 · ScreenCaptureKit capture provider","Replace v1's deprecated CGDisplay path; permissions health check with re-grant guidance. AC: frames on macOS 14+; revoked-permission state visible, not silent.
+
+deps: T-101
+
+/label ~""lane::backend"" ~""prio::p0"" ~""epic::E03""
+/milestone %""M1-Foundations"""
+"T-303 · Perceptual and semantic dedup","Downscale-before-hash dHash, A-B-A loop detection, semantic window; maintained hashing dependency. AC: v1 heuristic behavior preserved under test; no full-res PNG decode on the hot path.
+
+deps: T-302
+
+/label ~""lane::backend"" ~""prio::p0"" ~""epic::E03""
+/milestone %""M1-Foundations"""
+"T-304 · Port admission policy","Navigation/listing surface skips, url-only records. AC: v1 segment-list cases green.
+
+deps: T-301
+
+/label ~""lane::backend"" ~""prio::p0"" ~""epic::E03""
+/milestone %""M1-Foundations"""
+"T-305 · Port OCR wrapper","Vision via objc2; async boundary; LOW_CONF convention; min_confidence actually wired. AC: v1 observed-value tests green; no sync call on the async runtime.
+
+deps: T-101
+
+/label ~""lane::backend"" ~""prio::p0"" ~""epic::E03""
+/milestone %""M1-Foundations"""
+"T-306 · Staged capture pipeline and SkipReason counters","The ARCHITECTURE §4.1 scheduler with per-stage seams; one terminal counter per tick; durable batch on shutdown. AC: each stage testable without the loop; shutdown loses zero records.
+
+deps: T-302, T-303, T-304, T-305
+
+/label ~""lane::backend"" ~""prio::p0"" ~""epic::E03""
+/milestone %""M1-Foundations"""
+"T-307 · Port session identity and merge/continuity","Anchors, candidate scoring, merge thresholds, story merge. AC: v1 merge tests green; cross-app window rules covered.
+
+deps: T-306
+
+/label ~""lane::backend"" ~""prio::p0"" ~""epic::E03""
+/milestone %""M1-Foundations"""
+"T-308 · Adaptive sampling","Idle-blend FPS, deep-idle pause, forced interval. AC: simulated idle timeline produces expected FPS curve.
+
+deps: T-306
+
+/label ~""lane::backend"" ~""prio::p1"" ~""epic::E03""
+/milestone %""M1-Foundations"""
+"T-309 · Declarative gate policy and replay harness","Capture gates as a config-driven policy table; offline replay over recorded fixtures (the v1 stacked-gates regression is the named test). AC: gate changes show per-gate drop deltas in the replay report.
+
+deps: T-306
+
+/label ~""lane::backend"" ~""prio::p0"" ~""epic::E03""
+/milestone %""M1-Foundations"""
+"T-310 · Spike and soak: ScreenCaptureKit provider hardening","Pin the screencapturekit crate exactly; multi-day soak with an RSS trend assertion (the crate's issue history is leaks and stalled callbacks); decide periodic SCScreenshotManager captures vs a persistent SCStream for 0.5 FPS; record the fallback (objc2-screen-capture-kit or vendoring, as both shipped comparables did); document the macOS 26.1 dev-build bundle/TCC quirk. AC: soak passes or the fallback is adopted; decision note committed (ADR-001 amendment).
+
+deps: T-302
+
+/label ~""lane::backend"" ~""prio::p0"" ~""epic::E03""
+/milestone %""M1-Foundations"""
+"T-311 · Backfill importers (browser history, git log, shell history)","Deterministic, local, no new privacy surface: seed the vault on first run so the first real context pack works in minutes instead of after a day of capture (cold-start fix). AC: a fresh install plus importers yields a context pack that answers project questions; importers respect the blocklist.
+
+deps: T-201
+
+/label ~""lane::backend"" ~""prio::p1"" ~""epic::E03""
+/milestone %""M3-AgentContext"""
+"T-401 · Model registry and downloader crate","Pinned revisions, SHA-256, required/optional flags, resume, disk preflight (v1 ADR-012 semantics). Downloads flow through the platform-owned fndr-downloader crate. AC: checksum mismatch deletes artifact and fails loudly; HTTP confined to fndr-downloader/fndr-updater per ADR-004.
+
+deps: T-101, T-103
+
+/label ~""lane::ml"" ~""prio::p0"" ~""epic::E04""
+/milestone %""M1-Foundations"""
+"T-402 · Embedding contract v1","Qwen3-Embedding-0.6B official Q8_0 GGUF (639 MB; no official Q4 exists, avoid community sub-8-bit quants), instruction asymmetry in the contract struct, and the 768d matryoshka rule implemented app-side: take the 1024d output, truncate to 768, L2-renormalize, all inside the contract with tests. Construction probe (dimension, non-zero). AC: prefix asymmetry test; truncate+renormalize round-trip test; wrong-dimension write refused end to end.
+
+deps: T-401
+
+/label ~""lane::ml"" ~""prio::p0"" ~""epic::E04""
+/milestone %""M1-Foundations"""
+"T-403 · Model-worker priority queue","All llama.cpp work behind one queue (interactive > synthesis > review > backfill); load/unload with idle timers. AC: contention test proves priority; no LLM call outside the queue (lint or review rule).
+
+deps: T-401
+
+/label ~""lane::ml"" ~""prio::p0"" ~""epic::E04""
+/milestone %""M1-Foundations"""
+"T-404 · Embedding batch path","AC: throughput benchmark recorded; capture-burst memoization.
+
+deps: T-402, T-403
+
+/label ~""lane::ml"" ~""prio::p0"" ~""epic::E04""
+/milestone %""M1-Foundations"""
+"T-405 · VLM synthesis path","Qwen3-VL-4B with 2B tier on 8 GB; idle unload. AC: synthesis runs pressure-gated; RAM budget respected in probe.
+
+deps: T-403
+
+/label ~""lane::ml"" ~""prio::p1"" ~""epic::E04""
+/milestone %""M2-Retrieval"""
+"T-406 · Reranker integration behind eval gate","Qwen3-Reranker-0.6B via the ggml-org GGUF conversion (no official Qwen GGUF exists; community conversions missing cls.output.weight are broken), SHA-256 pinned; never served from the same llama.cpp context as embeddings (upstream all-zero-output defect). AC: rerank endpoint scores sanity fixture; integrated behind a flag; the promotion decision itself is T-509's deliverable.
+
+deps: T-403, T-508
+
+/label ~""lane::ml"" ~""prio::p1"" ~""epic::E04""
+/milestone %""M2-Retrieval"""
+"T-407 · Onboarding model provisioning","Required-model step with progress, resume, and the no-zero-vector capture block (PRD P0.2). AC: missing embedder blocks capture visibly; install-from-URL to first captured memory with real embeddings under 15 minutes on a 50 Mbps connection (PRD P0.10), timed on the clean-VM checklist.
+
+deps: T-401, T-1001
+
+/label ~""lane::frontend"" ~""prio::p0"" ~""epic::E04""
+/milestone %""M2-Retrieval"""
+"T-408 · Spike: Qwen3-VL through llama-cpp-2 mtmd","Time-boxed one week: Qwen3-VL-2B through the published crate's experimental mtmd feature (image plus prompt to grounded JSON), building prompts via mtmd markers, not the chat-template helper (known-broken upstream). AC: go/no-go note for the F2 VLM synthesis design; failure degrades to deterministic-only synthesis, by design.
+
+deps: T-401
+
+/label ~""lane::ml"" ~""prio::p1"" ~""epic::E04""
+/milestone %""M1-Foundations"""
+"T-409 · Re-embedding migration design note","One page: what happens when the pinned embedder is superseded (the dimension guard must not brick capture); uses the model-worker backfill priority class as the queue; states cost and UX on 8 GB. AC: reviewed note in docs; answers the ""what happens when the embedding model updates"" question.
+
+deps: T-402
+
+/label ~""lane::ml"" ~""prio::p1"" ~""epic::E04""
+/milestone %""M3-AgentContext"""
+"T-501 · Eval corpus v0","Synthetic capture fixtures covering the hard-case taxonomy (exact identifiers, paraphrase, time-scoped, app-scoped, cross-session) plus labelled (query, expected-record) pairs; sanitized donation protocol for real sessions; a frozen held-out test split that CI and tuning never touch (published numbers come from it). AC: 150+ labelled pairs; corpus loader; held-out split frozen and documented.
+
+deps: none
+
+/label ~""lane::ml"" ~""prio::p0"" ~""epic::E05""
+/milestone %""M1-Foundations"""
+"T-502 · Bench harness and resource probes","`make bench`: Recall@5, MRR@10, latency p50/p95, RSS, storage, capture CPU %, and context-pack p95; real models only (mock cannot satisfy). All latency and resource numbers come exclusively from the reference machine, never CI. AC: one command produces the metrics file on the reference machine, covering every G3/P0.8 number.
+
+deps: T-501
+
+/label ~""lane::ml"" ~""prio::p0"" ~""epic::E05""
+/milestone %""M1-Foundations"""
+"T-503 · Chunker v2","Line-kind classification rewritten with real token counts and mandatory source byte spans. AC: span integrity property tests; v1 boundary cases green.
+
+deps: T-301
+
+/label ~""lane::ml"" ~""prio::p0"" ~""epic::E05""
+/milestone %""M2-Retrieval"""
+"T-504 · Chunk-first write path","Chunks embedded and indexed at capture flush; parent rollup vector. AC: idempotent re-flush; parent-child integrity test.
+
+deps: T-503, T-402, T-202
+
+/label ~""lane::backend"" ~""prio::p0"" ~""epic::E05""
+/milestone %""M2-Retrieval"""
+"T-505 · Routes and RRF fusion","Ported RetrievalRoute/RouteRunner; vector, keyword (Lance FTS), temporal routes; RRF with metadata prefilters. AC: route timeouts and metrics; fusion rank tests; one stack serves search and packs.
+
+deps: T-504, T-203
+
+/label ~""lane::ml"" ~""prio::p0"" ~""epic::E05""
+/milestone %""M2-Retrieval"""
+"T-506 · Ported ranking adjustments with attribution","Source-alignment ladder, diversity pass, staleness multipliers as named additive features in FusionSignals. AC: per-feature attribution visible in results; each feature has its own test and bench delta.
+
+deps: T-505
+
+/label ~""lane::ml"" ~""prio::p0"" ~""epic::E05""
+/milestone %""M2-Retrieval"""
+"T-507 · Relevance gate, verifier, evidence pack","Three-state verdict, two-backer rule, evidence pack shape (ported). AC: verdict state machine tests; citations resolve to real records.
+
+deps: T-505
+
+/label ~""lane::ml"" ~""prio::p0"" ~""epic::E05""
+/milestone %""M2-Retrieval"""
+"T-508 · FNDR-Bench v1 with baselines and CI gate","BM25-only, vector-only, POC-pipeline, and at least one off-the-shelf naive-RAG baseline on the same corpus (methods, not competitors); CI compares PRs to the committed baseline on the train split only; the held-out split is scored rarely and reported separately. AC: numbers committed; a deliberate regression PR is blocked; held-out numbers never appear in tuning loops.
+
+deps: T-502, T-505
+
+/label ~""lane::ml"" ~""prio::p0"" ~""epic::E05""
+/milestone %""M2-Retrieval"""
+"T-509 · Reranker ablation","AC: promotion decision recorded with numbers; loser stays behind a flag.
+
+deps: T-406, T-508
+
+/label ~""lane::ml"" ~""prio::p1"" ~""epic::E05""
+/milestone %""M3-AgentContext"""
+"T-510 · Chunk vs whole-record ablation","The v1 ADR-008 claim finally measured. AC: result published in the bench report.
+
+deps: T-508
+
+/label ~""lane::ml"" ~""prio::p1"" ~""epic::E05""
+/milestone %""M3-AgentContext"""
+"T-511 · Latency instrumentation at scale","1M-row synthetic store; p50/p95 against PRD P0.8. AC: targets met or a remediation ticket opened before the gate.
+
+deps: T-505
+
+/label ~""lane::ml"" ~""prio::p0"" ~""epic::E05""
+/milestone %""M3-AgentContext"""
+"T-512 · Context usefulness rubric and human review loop","Define the usefulness rubric for context packs and summaries (v1 pain point 1); weekly scored dogfood queries by all four builders with inter-rater agreement reported; LLM-judge harness for summary quality on real models (the v1 evals concept, done honestly). AC: rubric doc exists; first weekly scores recorded with agreement statistics; judge scores appear in the bench report; progress tracked against the G-metric of 80% rated useful-without-edits by month 6.
+
+deps: T-502
+
+/label ~""lane::ml"" ~""prio::p0"" ~""epic::E05""
+/milestone %""M2-Retrieval"""
+"T-513 · Real-model eval CI lane","Per-PR quality gate on Linux runners (cached Q8_0 GGUF, small fixed corpus, Recall@5/MRR only) plus a nightly or label-triggered macOS parity lane; hosted macOS runners have no Metal and 3 vCPUs, so no latency or RAM assertion ever runs in CI (those come from the reference machine via T-502). AC: PR gate under 15 minutes; nightly lane green; a mock embedder cannot pass either lane (P0.7).
+
+deps: T-502
+
+/label ~""lane::platform"" ~""prio::p0"" ~""epic::E05""
+/milestone %""M2-Retrieval"""
+"T-514 · Faithfulness slice: labelled unanswerable queries","Bench queries whose correct output is NotEnoughEvidence, so verdict overclaiming becomes a measured regression; plus a small claim-support audit in the weekly rubric (citations must support, not merely resolve). AC: verdict-accuracy metric in the bench report; an overclaiming regression blocks like any other bench regression.
+
+deps: T-501
+
+/label ~""lane::ml"" ~""prio::p0"" ~""epic::E05""
+/milestone %""M2-Retrieval"""
+"T-515 · Visual similarity search (SigLIP 2)","Image-embedding similarity over captures behind the same privacy gates (PRD P1). AC: image-to-image retrieval on a fixture set; storage and RAM within budget; off by default until the bench slice exists.
+
+deps: T-401
+
+/label ~""lane::ml"" ~""prio::p1"" ~""epic::E05""
+/milestone %""M5-AssistantProof"""
+"T-601 · Port deterministic insight derivation","Insight fields, low-RAM fusion fallback, durable-context composer. AC: v1 tests green; no-LLM path produces complete records.
+
+deps: T-301
+
+/label ~""lane::ml"" ~""prio::p0"" ~""epic::E06""
+/milestone %""M2-Retrieval"""
+"T-602 · Port VLM synthesis prompts and grounding validation","MEMORY_SYNTHESIS_PROMPT, VOICE_RULES, parse clamps, grounding validator, narration filter minus the v1 self-referential regex hack. AC: prompts byte-identical to v1; validator adversarial tests.
+
+deps: T-405, T-601
+
+/label ~""lane::ml"" ~""prio::p1"" ~""epic::E06""
+/milestone %""M2-Retrieval"""
+"T-603 · Single embedding-document composer","One composer for capture and review (fixes v1 drift); insight-first embedding text with provenance manifest. AC: capture and review produce identical embedding text for identical records.
+
+deps: T-402, T-601
+
+/label ~""lane::ml"" ~""prio::p0"" ~""epic::E06""
+/milestone %""M2-Retrieval"""
+"T-604 · Review worker on durable queue","Attempt caps, backoff, per-record lock, pressure gating, skip-vs-fail classification. AC: deterministic-failure record retries capped; queue survives restart.
+
+deps: T-201, T-403, T-603
+
+/label ~""lane::ml"" ~""prio::p0"" ~""epic::E06""
+/milestone %""M2-Retrieval"""
+"T-605 · Daily consolidation pass","Per-record locking (never batch-holding the model queue), dry-run mode, local-day handling. AC: v1 daily tests ported; capture never starved during a pass.
+
+deps: T-604
+
+/label ~""lane::ml"" ~""prio::p1"" ~""epic::E06""
+/milestone %""M2-Retrieval"""
+"T-606 · Lifecycle end to end","Enum through IPC to vault chips. AC: five states render; reviewed summary preferred in previews.
+
+deps: T-604
+
+/label ~""lane::frontend"" ~""prio::p1"" ~""epic::E06""
+/milestone %""M2-Retrieval"""
+"T-701 · MCP transport with auth-always","Official Rust SDK, streamable HTTP, bearer required in all modes, constant-time compare, origin/host allowlist, audit log, owner-only discovery file (ADR-007). AC: unauthenticated and cross-origin calls rejected by test; the two v1 audit holes are named regression tests.
+
+deps: T-101
+
+/label ~""lane::backend"" ~""prio::p0"" ~""epic::E07""
+/milestone %""M2-Retrieval"""
+"T-702 · Tools wave 1","search, context_pack, timeline, recall, project_context, active_focus, privacy_status, source_evidence. AC: schema round-trip and auth-failure tests per tool; served by the same engine functions as the UI.
+
+deps: T-701, T-505
+
+/label ~""lane::backend"" ~""prio::p0"" ~""epic::E07""
+/milestone %""M2-Retrieval"""
+"T-703 · Tools wave 2","delta, open_target, explain_retrieval, feedback, remember_decision (only memory-mutating tool). graph_context is split out to T-710 so a graph slip cannot block gate-critical tools. AC: same test bar; delta returns only changes since timestamp.
+
+deps: T-702
+
+/label ~""lane::backend"" ~""prio::p0"" ~""epic::E07""
+/milestone %""M3-AgentContext"""
+"T-704 · Resources and prompt registry","Three fndr:// resources; prompts with real per-prompt argument schemas. AC: resources/list and prompts/get round-trip.
+
+deps: T-701
+
+/label ~""lane::backend"" ~""prio::p1"" ~""epic::E07""
+/milestone %""M3-AgentContext"""
+"T-705 · Scoped tokens, revocation, rate limits","Per-client tokens, per-tool limits. AC: revoked token 401s on next call; limit test.
+
+deps: T-701
+
+/label ~""lane::backend"" ~""prio::p0"" ~""epic::E07""
+/milestone %""M3-AgentContext"""
+"T-706 · MCP contract doc","docs/mcp.md v2 with per-tool schemas and the v1-to-v2 mapping. AC: doc examples execute against a dev server.
+
+deps: T-703
+
+/label ~""lane::backend"" ~""prio::p0"" ~""epic::E07""
+/milestone %""M3-AgentContext"""
+"T-707 · Connect-your-agent onboarding","Claude Desktop/Code config snippets, token issuance UI. AC: a fresh install reaches a working agent call following only the UI.
+
+deps: T-702
+
+/label ~""lane::frontend"" ~""prio::p0"" ~""epic::E07""
+/milestone %""M3-AgentContext"""
+"T-708 · Tunnel and public mode docs and tests","AC: non-loopback bind refuses to start without auth and TLS.
+
+deps: T-705
+
+/label ~""lane::platform"" ~""prio::p1"" ~""epic::E07""
+/milestone %""M3-AgentContext"""
+"T-709 · Session Story tool","`fndr.session_story` (ratified into ADR-007 as a P1 addition): cited narrative reconstruction of a captured work session (what happened, what changed, why), exportable as markdown for demos, interviews, and standups (v1 pain point 8). Composition logic pairs with the ml lane. AC: story over a real captured session with every claim citing records; export renders standalone; ships with schema round-trip test, auth-failure test, rate limit, and docs entry per the tool-addition rule.
+
+deps: T-702
+
+/label ~""lane::backend"" ~""prio::p1"" ~""epic::E07""
+/milestone %""M5-AssistantProof"""
+"T-710 · graph_context tool","Bounded typed-graph neighborhood over MCP, split from wave 2 so it rides the graph epic's schedule. AC: real data from fndr-graph; the four tool artifacts per the tool-addition rule.
+
+deps: T-702, T-1102
+
+/label ~""lane::backend"" ~""prio::p1"" ~""epic::E07""
+/milestone %""M4-Comprehension"""
+"T-711 · Grounded Q&A tool (fndr.answer)","Ratified into ADR-007 as a P1 addition: answers composed over full chunk text within a real token budget, per-claim citation checks, three-state verdict; the v1 answer path (1,000-char context, 4-extension validator) is the named anti-pattern. AC: faithfulness slice (T-514) covers it; the four tool artifacts.
+
+deps: T-702, T-514
+
+/label ~""lane::ml"" ~""prio::p1"" ~""epic::E07""
+/milestone %""M5-AssistantProof"""
+"T-712 · Agent field test against the dev server","Wire Claude Code and Claude Desktop to the dev server the week wave 1 lands; run 10 scripted agent tasks; record tool-selection quality, schema friction, and token budgets. AC: findings ticketed and feeding T-703 schemas; the first real-agent contact does not wait for the gate month.
+
+deps: T-702
+
+/label ~""lane::backend"" ~""prio::p0"" ~""epic::E07""
+/milestone %""M2-Retrieval"""
+"T-801 · Blocklist v2","Exact-token app matching and proper suffix-domain matching; v1 false-positive cases as tests. AC: short-name substring and parent-domain escalation bugs cannot recur.
+
+deps: T-101
+
+/label ~""lane::backend"" ~""prio::p0"" ~""epic::E08""
+/milestone %""M1-Foundations"""
+"T-802 · Sensitive-context detection as data","Configurable keyword/domain lists (ported v1 safety-gate data). AC: alert queue with dismissal keys; lists editable without code changes.
+
+deps: T-801
+
+/label ~""lane::backend"" ~""prio::p1"" ~""epic::E08""
+/milestone %""M1-Foundations"""
+"T-803 · Safety gate live on the write path","Allow/Redact/SkipStorage with secret-pattern redaction, on the storage path (PRD P0.4). Moved to M2 so it lands before dogfooding stores months of the team's own unredacted content; adversarial-suite hardening continues into M3 (T-806 window). AC: adversarial suite per class (secrets, password managers, banking, medical, private browsing) passes; redactions logged locally; pre-gate dogfood stores are purged (see T-905).
+
+deps: T-306, T-801
+
+/label ~""lane::backend"" ~""prio::p0"" ~""epic::E08""
+/milestone %""M2-Retrieval"""
+"T-804 · Pause, incognito, menu-bar controls","Push status events, no polling. AC: toggle reflects in UI within one tick; incognito also pauses review work.
+
+deps: T-306
+
+/label ~""lane::frontend"" ~""prio::p0"" ~""epic::E08""
+/milestone %""M1-Foundations"""
+"T-805 · No-screenshot-persistence test","AC: CI test asserts no pixel bytes or paths persist from any path, including url-only and autofill flows.
+
+deps: T-306
+
+/label ~""lane::backend"" ~""prio::p0"" ~""epic::E08""
+/milestone %""M1-Foundations"""
+"T-806 · PRIVACY.md","The boundary, egress list, verification recipe (ADR-004). AC: recipe reproduces on a clean checkout.
+
+deps: T-103, T-803
+
+/label ~""lane::backend"" ~""prio::p0"" ~""epic::E08""
+/milestone %""M3-AgentContext"""
+"T-901 · Tauri shell foundation","Tray, autostart, single instance, main window, event bridge. AC: engine runs headless with the window closed.
+
+deps: T-101
+
+/label ~""lane::platform"" ~""prio::p0"" ~""epic::E09""
+/milestone %""M1-Foundations"""
+"T-902 · Permissions onboarding","Screen-recording flow with plain privacy story, preceded by a verify-it-yourself trust moment (live egress counter at zero, one-click audit log, pause/incognito demonstrated) before the permission prompt; health re-check on updates (TCC mitigation). AC: denial and revocation states have guidance, never silence; the trust screen renders before the prompt.
+
+deps: T-901, T-302
+
+/label ~""lane::platform"" ~""prio::p0"" ~""epic::E09""
+/milestone %""M2-Retrieval"""
+"T-903 · Release pipeline","Tag builds signed DMG plus updater manifest (v1 ADR-013 carried). AC: vN to vN+1 in-place update verified.
+
+deps: T-102
+
+/label ~""lane::platform"" ~""prio::p0"" ~""epic::E09""
+/milestone %""M2-Retrieval"""
+"T-904 · Notarization integration","When the Apple account exists. AC: stapled build passes spctl.
+
+deps: T-903
+
+/label ~""lane::platform"" ~""prio::p1"" ~""epic::E09""
+/milestone %""M6-Ship"""
+"T-905 · Clean-VM QA checklist and demo-gate script","The PRD month-3 gate as an executable checklist. The demo script's spine is the counterfactual cut (the identical agent task with FNDR off, agent interrogates the user, then FNDR on, one tool call) and the live privacy negative (visit a bank and a password manager on camera, then prove absence in the vault, the pack, and privacy_status). The install step scripts the right-click Open path (ad-hoc signing; PRD open question 1 default). Includes purging pre-T-803 dogfood stores. AC: gate run recorded end to end on a clean machine.
+
+deps: T-903, T-707, T-803, T-703
+
+/label ~""lane::platform"" ~""prio::p0"" ~""epic::E09""
+/milestone %""M3-AgentContext"""
+"T-906 · Omnibar NSPanel spike","Time-boxed one week (ADR-001 action). AC: non-activating panel with global hotkey demonstrated or the native-fallback note written.
+
+deps: T-901
+
+/label ~""lane::platform"" ~""prio::p1"" ~""epic::E09""
+/milestone %""M1-Foundations"""
+"T-907 · fndr doctor and setup diagnostics","One command and panel checking permissions, models, stores, indexes, sidecar, and MCP reachability with pass/fail reasons and an exportable report for debugging someone else's machine (v1 pain points 2 and 4). AC: a seeded fault matrix (revoked permission, missing model, stale index, dead sidecar) is diagnosed correctly.
+
+deps: T-901
+
+/label ~""lane::platform"" ~""prio::p0"" ~""epic::E09""
+/milestone %""M2-Retrieval"""
+"T-908 · Month-3 gate dry-run","Run the full gate script two weeks before M3 close so failures are discovered with time to react instead of at the gate. AC: dry-run executed; every failure has an owner and a ticket before the real gate.
+
+deps: T-702, T-903
+
+/label ~""lane::platform"" ~""prio::p0"" ~""epic::E09""
+/milestone %""M3-AgentContext"""
+"T-1001 · UI foundation","Domain taxonomy, Zustand store, generated bindings, token theme base, useTauriEvent port. AC: no hand-written IPC types; no polling hooks for always-on state.
+
+deps: T-105
+
+/label ~""lane::frontend"" ~""prio::p0"" ~""epic::E10""
+/milestone %""M1-Foundations"""
+"T-1002 · Search and result cards","Surfacing reasons and signals visible; grounded-card prompt path with deterministic fallback. AC: card renders reason and citations; low-confidence prefix honored.
+
+deps: T-1001, T-505, T-1405
+
+/label ~""lane::frontend"" ~""prio::p0"" ~""epic::E10""
+/milestone %""M2-Retrieval"""
+"T-1003 · Memory vault v1","Browse, lifecycle chips, delete flows wired to deletion-everywhere. AC: delete from vault verifiably empties search and evidence.
+
+deps: T-1001, T-1405
+
+/label ~""lane::frontend"" ~""prio::p0"" ~""epic::E10""
+/milestone %""M2-Retrieval"""
+"T-1004 · Pipeline health panel","Per-stage health (ok, degraded, blocked, with reasons), SkipReason counters, model and queue status, bench snapshot, and local usage counters (queries, packs, deltas served per day) so retention is measured, not self-reported. AC: idle app performs zero status IPC; every v1 ""mysteriously not working"" class (silent capture stop, silent summary fallback) surfaces here with a reason; a builder diagnoses a seeded missing-capture case in under 2 minutes (PRD legibility metric).
+
+deps: T-1001, T-1405
+
+/label ~""lane::frontend"" ~""prio::p0"" ~""epic::E10""
+/milestone %""M2-Retrieval"""
+"T-1007 · Capture-explain","Answer ""why was this moment not captured"" from retained gate outcomes: given a time range, return the stage and reason each frame stopped at (blocklist, dedup, admission, low-signal, pressure). AC: a seeded set of skipped moments is explained correctly from the UI.
+
+deps: T-306, T-309, T-1004
+
+/label ~""lane::backend"" ~""prio::p0"" ~""epic::E10""
+/milestone %""M3-AgentContext"""
+"T-1005 · Settings","Blocklist, retention, models, MCP tokens and revocation. AC: every P0 privacy control reachable.
+
+deps: T-1001, T-1405
+
+/label ~""lane::frontend"" ~""prio::p0"" ~""epic::E10""
+/milestone %""M2-Retrieval"""
+"T-1006 · Timeline view","AC: session/day grouping consistent with fndr.timeline output.
+
+deps: T-1002
+
+/label ~""lane::frontend"" ~""prio::p1"" ~""epic::E10""
+/milestone %""M4-Comprehension"""
+"T-1008 · Sample vault and empty-vault state","Loadable sample vault built from the T-501 fixtures (""explore a sample day"" in onboarding, also used by the demo and by evaluators who install), plus an explicit designed empty-vault state so day-one is an experience, not a dead end (cold-start fix). AC: fresh install can explore the sample day; empty vault explains what will appear and when.
+
+deps: T-501, T-1003
+
+/label ~""lane::frontend"" ~""prio::p0"" ~""epic::E10""
+/milestone %""M2-Retrieval"""
+"T-1009 · Morning digest","Deterministic ""yesterday"" digest in the menu bar (composition over session records, no VLM required): a daily payoff that requires no invocation habit. AC: digest renders each morning from real capture; dismissible; zero LLM dependency.
+
+deps: T-505
+
+/label ~""lane::frontend"" ~""prio::p1"" ~""epic::E10""
+/milestone %""M4-Comprehension"""
+"T-1101 · Entity extraction and graph store","UUIDv5 identity, confidence weights, 0.4 edge floor, no fabricated conflict edges; SQLite tables with indexes. AC: v1 stable-id tests green; extraction off the hot path.
+
+deps: T-201, T-601
+
+/label ~""lane::backend"" ~""prio::p0"" ~""epic::E11""
+/milestone %""M4-Comprehension"""
+"T-1102 · Traversal and GraphPlan wiring","Recursive-CTE neighborhood, paths with labeled steps, intent-to-edges table. AC: bounded traversal latency test; feeds the graph_context tool (T-710).
+
+deps: T-1101
+
+/label ~""lane::backend"" ~""prio::p0"" ~""epic::E11""
+/milestone %""M4-Comprehension"""
+"T-1103 · Real community detection","Actual Louvain (modularity), community naming. AC: known-graph fixture yields expected partitions (the v1 connected-components bug is the named test).
+
+deps: T-1102
+
+/label ~""lane::backend"" ~""prio::p1"" ~""epic::E11""
+/milestone %""M4-Comprehension"""
+"T-1104 · 3D graph rebuild","Direct typed-schema consumption, instanced nodes, batched edges, token colors, 29-to-5 relationship mapping port. AC: 2k nodes at 60 fps on the reference machine; zero hardcoded colors.
+
+deps: T-1102, T-1401
+
+/label ~""lane::frontend"" ~""prio::p1"" ~""epic::E11""
+/milestone %""M4-Comprehension"""
+"T-1105 · Graph-route eval experiment","AC: promotion decision recorded with bench numbers (ADR-006 gate).
+
+deps: T-1102, T-508
+
+/label ~""lane::ml"" ~""prio::p1"" ~""epic::E11""
+/milestone %""M4-Comprehension"""
+"T-1201 · Swift sidecar","FluidAudio (Parakeet + pyannote), SCK system audio, versioned stdio protocol, supervised lifecycle. AC: transcription and diarization on a fixture recording; typed unavailable states.
+
+deps: T-403
+
+/label ~""lane::platform"" ~""prio::p0"" ~""epic::E12""
+/milestone %""M4-Comprehension"""
+"T-1202 · Meeting ingestion","Sessions and segments through the same write path as capture; speaker labels; links to concurrent screen context. AC: meeting content retrievable and citable like any memory.
+
+deps: T-1201, T-306
+
+/label ~""lane::ml"" ~""prio::p0"" ~""epic::E12""
+/milestone %""M4-Comprehension"""
+"T-1203 · Meetings UI","Record controls, live status, transcript view with speakers, search. AC: recording state always visible.
+
+deps: T-1202
+
+/label ~""lane::frontend"" ~""prio::p1"" ~""epic::E12""
+/milestone %""M4-Comprehension"""
+"T-1204 · Meeting privacy integration","Blocklist and incognito respected. AC: incognito blocks recording start; test.
+
+deps: T-1202
+
+/label ~""lane::backend"" ~""prio::p0"" ~""epic::E12""
+/milestone %""M4-Comprehension"""
+"T-1205 · Meetings consent defaults and design note","Meetings record other people, and several jurisdictions require all-party consent. Off by default; explicit per-meeting start action (never ambient); the visible recording indicator; a distinct, shorter retention default for meeting transcripts; a short consent design note in docs. AC: defaults implemented; note reviewed by all four.
+
+deps: none
+
+/label ~""lane::backend"" ~""prio::p0"" ~""epic::E12""
+/milestone %""M4-Comprehension"""
+"T-1206 · Model attribution notices","CC-BY-4.0 attribution for Parakeet and pyannote in the app's acknowledgements (a redistribution requirement). AC: acknowledgements surface lists all model licenses.
+
+deps: T-1201
+
+/label ~""lane::platform"" ~""prio::p1"" ~""epic::E12""
+/milestone %""M4-Comprehension"""
+"T-1301 · Omnibar","Ported keyboard/a11y/race-guard model; search plus ask modes. AC: v1 interaction contract preserved; component tests (v1 had zero).
+
+deps: T-906, T-1002
+
+/label ~""lane::frontend"" ~""prio::p0"" ~""epic::E13""
+/milestone %""M5-AssistantProof"""
+"T-1302 · Smart clipboard","History with privacy guards, autofill overlay. AC: blocklisted sources never enter history.
+
+deps: T-803
+
+/label ~""lane::frontend"" ~""prio::p1"" ~""epic::E13""
+/milestone %""M5-AssistantProof"""
+"T-1303 · Task extraction and panel","Extraction via the model queue; real task state. AC: no placeholder UI; extraction precision spot-check documented.
+
+deps: T-604
+
+/label ~""lane::ml"" ~""prio::p1"" ~""epic::E13""
+/milestone %""M5-AssistantProof"""
+"T-1304 · Focus mode","Drift detection surfaced from capture continuity signals. AC: event-driven, no polling.
+
+deps: T-1001
+
+/label ~""lane::frontend"" ~""prio::p1"" ~""epic::E13""
+/milestone %""M5-AssistantProof"""
+"T-1305 · Proactive resurfacing","Rate-limited, quiet, dismissible. AC: frequency cap tested; off by default until quality bar met.
+
+deps: T-505
+
+/label ~""lane::ml"" ~""prio::p1"" ~""epic::E13""
+/milestone %""M5-AssistantProof"""
+"T-1306 · Project context file export","Generate a refreshable agent warm-start file (CLAUDE.md-style) per project from context packs, regenerated daily, for agents without MCP access (v1 pain point 7 differentiator). Pulled into the spine: it improves every agent session the builders already run with zero invocation habit, which is the retention loop. AC: a fresh agent session using only the exported file answers project questions correctly; daily regeneration verified.
+
+deps: T-702
+
+/label ~""lane::ml"" ~""prio::p0"" ~""epic::E13""
+/milestone %""M3-AgentContext"""
+"T-1401 · Token system and palettes port","cinematic-palettes with tests, semantic tokens, dark/light. AC: v1 palette tests green; no raw hex in components (lint).
+
+deps: T-1001
+
+/label ~""lane::frontend"" ~""prio::p0"" ~""epic::E14""
+/milestone %""M1-Foundations"""
+"T-1405 · Component library","Shared primitives (button, panel, card, input, chip, dialog) built once against the spec and tokens; feature UI may not hand-roll primitives (v1 pain point 9). AC: gallery page renders every primitive in every state; a lint or review rule blocks ad-hoc primitives.
+
+deps: T-1401, T-1404
+
+/label ~""lane::frontend"" ~""prio::p0"" ~""epic::E14""
+/milestone %""M1-Foundations"""
+"T-1402 · Wallpaper system","GLSL aurora fields driven by palette triples. AC: palette switch updates wallpaper live.
+
+deps: T-1401
+
+/label ~""lane::frontend"" ~""prio::p1"" ~""epic::E14""
+/milestone %""M4-Comprehension"""
+"T-1403 · Theming completeness pass","Every surface including the 3D graph on tokens. AC: token-coverage lint clean.
+
+deps: T-1401, T-1104
+
+/label ~""lane::frontend"" ~""prio::p1"" ~""epic::E14""
+/milestone %""M5-AssistantProof"""
+"T-1404 · Design language spec","Type scale, spacing, color roles, elevation, motion, and component inventory, written before feature UI exists; includes the explicit anti-slop bar (no gradient soup, no boxes-in-containers, no ad-hoc buttons, consistent fonts). AC: reviewed by all four; every later UI ticket links to it.
+
+deps: none
+
+/label ~""lane::frontend"" ~""prio::p0"" ~""epic::E14""
+/milestone %""M1-Foundations"""
+"T-1501 · Benchmark page and FNDR-Bench public release","Published FNDR-Bench numbers from the frozen held-out split, resource budgets, methodology with number lineage (records-per-day to corpus-size derivations), reproduce instructions, plus public release of the corpus and harness with an external-submission track. Framing: the first public benchmark for screen-derived personal memory retrieval, with FNDR as the reference implementation; an honestly published loss on a slice is itself credibility. AC: numbers regenerate via make bench on the reference machine; corpus and harness public; inter-rater agreement reported.
+
+deps: T-508, T-511, T-514
+
+/label ~""lane::ml"" ~""prio::p0"" ~""epic::E15""
+/milestone %""M5-AssistantProof"""
+"T-1502 · Docs site","Install, privacy, MCP contract, architecture, plus a ""limits and failure modes"" page fed by the incidents-and-reversals log (the staff-interview artifact). Promoted to p0: two PRD goals depend on it. AC: builds from repo; linked from README.
+
+deps: T-706, T-806
+
+/label ~""lane::platform"" ~""prio::p0"" ~""epic::E15""
+/milestone %""M6-Ship"""
+"T-1503 · Demo video","The 3-minute story built on the counterfactual cut (same agent task, FNDR off then on) and the live privacy negative, then graph/omnibar/theming beats; show the pack artifact itself, not just the chat output. AC: final cut published.
+
+deps: T-905
+
+/label ~""lane::frontend"" ~""prio::p0"" ~""epic::E15""
+/milestone %""M6-Ship"""
+"T-1504 · Companion API contract v2 and relay design note","Spec-only: v1 contract carried with pair-start off the network, permission scopes, WS push section; relay note is design-only (ADR-004 P2). AC: contract reviewed against the engine API; no code shipped.
+
+deps: T-702
+
+/label ~""lane::platform"" ~""prio::p0"" ~""epic::E15""
+/milestone %""M5-AssistantProof"""
+"T-1505 · v1.0.0 release","Tagged release, updater manifest, announcement README rewrite. AC: clean-machine install passes the QA checklist; PRD G-metrics reviewed and recorded.
+
+deps: T-903, T-1501, T-1503
+
+/label ~""lane::platform"" ~""prio::p0"" ~""epic::E15""
+/milestone %""M6-Ship"""
+"T-1506 · Hardening and performance pass","Systematic pass against every published target (latency, RSS, CPU, storage, pack p95) plus soak and failure-injection sweeps; misses are release blockers or written exceptions. AC: all published numbers re-measured on the release candidate; exceptions documented.
+
+deps: T-1501
+
+/label ~""lane::platform"" ~""prio::p0"" ~""epic::E15""
+/milestone %""M6-Ship"""
