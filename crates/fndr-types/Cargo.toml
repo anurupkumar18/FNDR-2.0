@@ -5,3 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+serde = { version = "1", features = ["derive"] }
+# Exact pin per ADR-001: specta is permanently release-candidate and breaking
+# changes land between RCs. Upgrades are scheduled maintenance PRs.
+specta = { version = "=2.0.0-rc.25", features = ["derive"] }
