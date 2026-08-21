@@ -29,6 +29,10 @@ Any session that ends with work in flight, or switches agent, tool, branch, or p
 
 `docs/incidents.md` records anything that went wrong or got reversed: a bad decision undone, a regression shipped and caught, an invariant nearly violated, a tool loop that burned a day. One entry each, with root cause and lesson. This is the failure-narrative record that founder reviews and interview/demo stories run on; an empty log after a hard month means it is not being kept, not that nothing happened.
 
+## Lessons loop
+
+`.claude/skills/fndr-v2-engineering/references/lessons.md` is the working-level learning loop: whenever a mistake or surprise costs a cycle, append an entry (date, cost, root cause, the rule now followed) in the same PR. Every session reads it before starting, and it ships inside the generated AGENTS.md, so every tool and teammate inherits each lesson automatically. New features start from the `fndr-feature-dev` skill (planning and right-first-try preflight) before the build discipline takes over.
+
 ## Docs move together
 
 A change that touches the PRD or the roadmap amends any ADR it touches in the same PR. Counts and contracts live in exactly one document of record (for example, ADR-007 owns the MCP tool inventory) and are referenced elsewhere, never repeated.

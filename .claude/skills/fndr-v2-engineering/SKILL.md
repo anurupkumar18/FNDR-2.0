@@ -40,6 +40,10 @@ Full checklists and rationale in `references/invariants.md`. The short form:
 
 ## Step 3: build discipline
 
+- **Read `references/lessons.md` before starting work.** It is the
+  append-only memory of every mistake that cost a cycle here, shared across
+  all tools and people via the generated AGENTS.md. Assume at least one
+  entry applies to your task.
 - **One vertical slice at a time.** Behavior change plus its tests plus its docs in one reviewable unit; no drive-by refactors.
 - **Anti-bloat gate before adding code:** can deleting, reusing, tightening an interface, or renaming solve it instead? The v1 repo grew three graph schemas and two retrieval stacks by skipping this question.
 - **Size rules:** file over ~600 lines or hot-path function over ~100 lines needs a recorded reason in the PR. Pipeline stages get seams (testable without the loop that drives them).
@@ -58,6 +62,12 @@ Run the cheapest relevant checks and state what you ran:
 - Full sweep: `make test` from repo root.
 
 A PR states: what changed, tests run with results, bench delta if applicable, and any invariant it brushed against. Unexpectedly empty output from a verification command is a failure to investigate, not a pass.
+
+Before closing the session: if any mistake or surprise cost a working cycle,
+append it to `references/lessons.md` (format at the top of that file) in the
+same PR. That single habit is what makes every future session, in every
+tool, start smarter than this one did. Larger reversals also get an entry in
+`docs/incidents.md`.
 
 ## Lane quick reference
 

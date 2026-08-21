@@ -253,7 +253,7 @@ comment linking the PR).
 - **T-1008 · Sample vault and empty-vault state** `lane::frontend` `prio::p0` `M2` deps: T-501, T-1003
   Loadable sample vault built from the T-501 fixtures ("explore a sample day" in onboarding, also used by the demo and by evaluators who install), plus an explicit designed empty-vault state so day-one is an experience, not a dead end (cold-start fix). AC: fresh install can explore the sample day; empty vault explains what will appear and when.
 - **T-1009 · Morning digest** `lane::frontend` `prio::p1` `M4` deps: T-505
-  Deterministic "yesterday" digest in the menu bar (composition over session records, no VLM required): a daily payoff that requires no invocation habit. AC: digest renders each morning from real capture; dismissible; zero LLM dependency.
+  Deterministic "yesterday" digest in the menu bar (composition over session records, no VLM required): a daily payoff that requires no invocation habit. AC: digest renders each morning from real capture; dismissible; zero LLM dependency. (Promotion to M3/P0 considered 2026-08-21; deferred to sprint planning with the capacity re-cut.)
 
 ## E11 · Knowledge graph (M4)
 
@@ -297,6 +297,10 @@ comment linking the PR).
   Rate-limited, quiet, dismissible. AC: frequency cap tested; off by default until quality bar met.
 - **T-1306 · Project context file export** `lane::ml` `prio::p0` `M3` deps: T-702
   Generate a refreshable agent warm-start file (CLAUDE.md-style) per project from context packs, regenerated daily, for agents without MCP access (v1 pain point 7 differentiator). Pulled into the spine: it improves every agent session the builders already run with zero invocation habit, which is the retention loop. AC: a fresh agent session using only the exported file answers project questions correctly; daily regeneration verified.
+- **T-1307 · Claude Code session warm-start hook** `lane::backend` `prio::p1` `M3` deps: T-702, T-1306
+  A repo-installable hook plus MCP flow that injects "what was I doing in this project" (from the warm-start file or a live context pack) into a fresh agent session automatically; zero-invocation daily value (owner-selected 2026-08-21). AC: a fresh Claude Code session in a captured project answers "where did I leave off" with no manual prompt; degrades silently to nothing when FNDR is not running, never blocking the session.
+- **T-1308 · Result feedback capture loop** `lane::frontend` `prio::p1` `M2` deps: T-1002, T-512
+  One-tap good/bad on results in the search UI plus wiring the founding `fndr.feedback` MCP tool; both export labelled pairs into the bench corpus pipeline so daily use improves retrieval quality (owner-selected 2026-08-21). AC: feedback lands as labelled pairs a bench corpus build can consume; no feedback data ever leaves the machine.
 
 ## E14 · Design system (M1 foundation, M4 to M5 completion)
 

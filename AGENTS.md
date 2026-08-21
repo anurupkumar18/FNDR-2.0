@@ -1,5 +1,5 @@
 <!-- GENERATED FILE, DO NOT EDIT. -->
-<!-- Source: .claude/skills/fndr-v2-engineering/  Regenerate: scripts/gen-agents-md.sh -->
+<!-- Sources: .claude/skills/fndr-v2-engineering/ and .claude/skills/fndr-feature-dev/  Regenerate: scripts/gen-agents-md.sh -->
 <!-- References below are inlined; a pointer to references/<name>.md resolves to the matching section. -->
 
 # FNDR v2 engineering
@@ -39,6 +39,10 @@ Full checklists and rationale in `references/invariants.md`. The short form:
 
 ## Step 3: build discipline
 
+- **Read `references/lessons.md` before starting work.** It is the
+  append-only memory of every mistake that cost a cycle here, shared across
+  all tools and people via the generated AGENTS.md. Assume at least one
+  entry applies to your task.
 - **One vertical slice at a time.** Behavior change plus its tests plus its docs in one reviewable unit; no drive-by refactors.
 - **Anti-bloat gate before adding code:** can deleting, reusing, tightening an interface, or renaming solve it instead? The v1 repo grew three graph schemas and two retrieval stacks by skipping this question.
 - **Size rules:** file over ~600 lines or hot-path function over ~100 lines needs a recorded reason in the PR. Pipeline stages get seams (testable without the loop that drives them).
@@ -58,6 +62,12 @@ Run the cheapest relevant checks and state what you ran:
 
 A PR states: what changed, tests run with results, bench delta if applicable, and any invariant it brushed against. Unexpectedly empty output from a verification command is a failure to investigate, not a pass.
 
+Before closing the session: if any mistake or surprise cost a working cycle,
+append it to `references/lessons.md` (format at the top of that file) in the
+same PR. That single habit is what makes every future session, in every
+tool, start smarter than this one did. Larger reversals also get an entry in
+`docs/incidents.md`.
+
 ## Lane quick reference
 
 - **ml:** `fndr-inference`, `fndr-memory`, `fndr-retrieval` (with backend), `fndr-bench`. You own the numbers; nothing you ship is done until the bench says so.
@@ -70,8 +80,6 @@ Details, per-lane review checklists, and the sidecar/MCP/IPC contract rules: `re
 ## Working with AI agents (all tools, all lanes)
 
 v1's codebase decayed because different agents (Cursor, Antigravity, Claude Code, Codex) each wrote from scratch instead of navigating what existed. The rules that prevent that, plus token discipline, dead-code hygiene, and the session-handoff format, live in `references/ai-collaboration.md`. Read it when starting AI-assisted work in this repo, when a session is about to end, or when you notice yourself (or another agent) about to write something the codebase may already contain. AGENTS.md in the repo root mirrors these conventions for non-Claude tools and is generated from this skill; never edit it by hand.
-
----
 
 <!-- Inlined from .claude/skills/fndr-v2-engineering/references/invariants.md -->
 
@@ -135,8 +143,6 @@ Before merging ported code, confirm:
 
 When any of these invariants conflicts with a deadline, the invariant wins and the scope moves. The PRD's pre-agreed cut lines exist precisely so schedule pressure never argues against an invariant. The spine (capture to retrieval to MCP) is never cut.
 
----
-
 <!-- Inlined from .claude/skills/fndr-v2-engineering/references/lanes.md -->
 
 # Lanes, boundaries, and contracts
@@ -187,8 +193,6 @@ Versioned JSON over stdio to `apps/helper`. Engine treats the sidecar as optiona
 1. Open the contract change (types/schema/tool def) as its own commit or PR; tag the owning lane.
 2. Land both sides behind the contract within the same milestone; a contract with only one side implemented does not ship enabled (no decorative plumbing).
 3. If the contract change is breaking, the PR names every consumer and updates them in the same change or links the tickets that will.
-
----
 
 <!-- Inlined from .claude/skills/fndr-v2-engineering/references/workflows.md -->
 
@@ -261,8 +265,6 @@ Runs monthly and at each milestone boundary. The v1 failure this prevents: a pla
 4. Tag; the pipeline does the rest (one tag push, no manual signing steps). Verify the updater applies vN to vN+1 on a real install.
 5. Update the benchmark page numbers for the release.
 
----
-
 <!-- Inlined from .claude/skills/fndr-v2-engineering/references/ai-collaboration.md -->
 
 # Working with AI agents: consistency, token discipline, hygiene, handoffs
@@ -315,3 +317,216 @@ Five lines is fine; the discipline is that it exists. The `Produced by` line is 
 ## Explainability of your own work
 
 The project's interview-and-demo story depends on being able to narrate what happened in a session without a scavenger hunt. Two habits feed it: handoff notes (above) capture the what-and-why at the time it is cheap, and PR descriptions state outcome, evidence, and decisions rather than restating the diff. When Session Story (T-709) ships, dogfood it: ask FNDR to reconstruct your own session and file gaps as context-quality bugs (T-512 rubric).
+
+<!-- Inlined from .claude/skills/fndr-v2-engineering/references/lessons.md -->
+
+# Lessons: the cross-session learning loop
+
+Append-only. Every mistake or surprise that cost a working cycle becomes an
+entry here, at the moment it is understood. Every session, in every tool
+(Claude Code, Codex, Cursor, a teammate's editor), reads this file before
+starting work: it ships inside the generated AGENTS.md, so the whole team
+and every agent inherit each lesson automatically. Larger reversals also go
+to `docs/incidents.md`; this file is for the working-level rules.
+
+Entry format:
+
+```
+## <date> · <one-line title>
+Cost: <what it burned: a red CI run, a debugging hour, a wrong design>
+Root cause: <the actual mechanism, not the symptom>
+Rule: <the behavior now followed instead>
+```
+
+---
+
+## 2026-08-21 · Migration file written but never registered
+Cost: three failing tests and a diagnosis pass.
+Root cause: migrations are registered by a const array in
+`crates/fndr-store/src/migrations.rs`; creating the SQL file does nothing by
+itself. The runner's list is the source of truth.
+Rule: after creating any registered-by-list artifact (migration, CI step,
+binding, workspace member), grep for the registry and confirm membership
+before running tests.
+
+## 2026-08-21 · Edition 2024 makes unsafe-in-unsafe-fn a hard gate
+Cost: a green `cargo test` followed by a red `make test` (clippy).
+Root cause: code ported from edition 2021 relies on implicit unsafe blocks
+inside unsafe fns; edition 2024 warns and `-D warnings` promotes it.
+Rule: ports from v1 get explicit `unsafe {}` blocks at each operation during
+the port, and `make test` (not bare `cargo test`) is the local gate.
+
+## 2026-08-21 · Header names are lowercase on the wire (http crate)
+Cost: a failing resume test blamed on the wrong component.
+Root cause: ureq/reqwest normalize header names to lowercase per the http
+crate; a hand-rolled test server matching "Range:" case-sensitively never
+saw the header.
+Rule: any hand-rolled HTTP parsing matches headers case-insensitively.
+
+## 2026-08-21 · Lance default prune reclaims nothing for our write pattern
+Cost: would have shipped a maintenance scheduler that never freed disk.
+Root cause: prune keeps versions inside a retention window and refuses files
+newer than 7 days unless `delete_unverified` is set; our versions are always
+younger than that.
+Rule: measured behavior beats documented behavior; spike the maintenance
+path of any storage engine before designing its scheduler (T-208 pattern).
+
+## 2026-08-21 · Release-candidate crates drift between rc versions
+Cost: a compile failure on the first specta-typescript API use.
+Root cause: the specta family is permanently rc and renames APIs between
+rc releases; remembered API shapes are unreliable.
+Rule: before coding against specta/tauri-specta/lancedb/rmcp, read the
+pinned version's source in `~/.cargo/registry` (or fetch the crate), and pin
+exactly (`=x.y.z-rc.n`).
+
+## 2026-08-21 · Transitive dependencies can violate our own bans
+Cost: a red cargo-deny lane after adding lancedb.
+Root cause: lance core hard-embeds a catalog REST client (reqwest) that no
+feature flag removes; tauri pulls reqwest for iOS/Android targets only.
+Rule: after adding a heavy dependency, run `cargo deny check` locally and
+trace hits with `cargo tree -i <crate>` before pushing; scope any exception
+to the exact parent crate and amend ADR-004 in the same PR.
+
+## 2026-08-21 · The guard hook reads the session cwd's branch
+Cost: a blocked push and a confusing denial while working on a second repo.
+Root cause: the personal block-main hook resolves the current branch from
+the directory the session started in, not from the repo the git command
+targets.
+Rule: open sessions inside the repository being changed; never bypass the
+hook, restructure the work instead.
+
+## 2026-08-21 · The first CI run after a heavy dependency is the budget test
+Cost: a 17m24s rust lane (budget: 15m) on the lance PR.
+Root cause: rust-cache has no cache for a new dependency tree; the first
+uncached run pays full compile.
+Rule: when adding a heavy dependency, say so in the PR body, expect the
+first run to bust the budget once, and verify the cached follow-up run
+returns under it.
+
+<!-- Inlined from .claude/skills/fndr-feature-dev/SKILL.md -->
+
+
+# FNDR feature development
+
+The purpose of this skill is right-first-try: most wasted cycles in this
+project come from starting to build before the feature is framed against the
+plan of record, checked against the ADRs, and cut into verifiable slices.
+The build discipline lives in `fndr-v2-engineering`; this skill covers
+everything before the first line of code.
+
+## Step 1: frame the feature
+
+Answer in writing (a sentence each) before anything else:
+
+1. What user problem does this solve, and for which PRD user (the builder,
+   the agent, the evaluator)? Tie it to a PRD goal (G1 to G5) or pain-point
+   row (PRD section 6). A feature that ties to neither is a P2 or a no.
+2. Is it demo-relevant? Product capability only; staging tricks are banned
+   (owner direction 2026-08-21).
+3. What is the smallest version that delivers the value? Name the cut line.
+
+## Step 2: check the plan of record
+
+- Search `docs/ROADMAP-TICKETS.md` for an existing ticket before writing a
+  new one; extend or re-scope rather than duplicate.
+- Read the ADRs the feature touches. A conflict means: stop, raise it, amend
+  the ADR deliberately or change the design. Never implement around a
+  decision (fndr-v2-engineering invariant).
+- Check `docs/specs/` for an owning brief (Codebase Memory work is governed
+  by `docs/specs/codebase-memory-brief.md`, not by improvisation).
+
+## Step 3: plan with the template
+
+Fill `references/feature-planning.md`. Keep it under a page. The output is
+either new/updated tickets in the roadmap (format per its Conventions
+section) plus any PRD/ADR edits in the same change (docs move together), or
+a written decision not to build, recorded where the idea came from.
+
+## Step 4: right-first-try preflight
+
+Run `references/right-first-try.md` before the first commit of the
+implementation. It is distilled from this repo's actual failure modes; every
+item earned its place. Read
+`../fndr-v2-engineering/references/lessons.md` as part of it; that file is
+where past sessions' mistakes become your head start.
+
+## Step 5: hand off
+
+Implementation follows `fndr-v2-engineering` (routing, invariants, lanes,
+verification). When the feature lands, close the loop: ledger row in the
+roadmap, journal or PR handoff note, and a lesson appended to `lessons.md`
+if anything cost a cycle.
+
+<!-- Inlined from .claude/skills/fndr-feature-dev/references/right-first-try.md -->
+
+# Right-first-try preflight
+
+Run before the first implementation commit of a feature. Each item exists
+because skipping it has already cost a cycle in this repository.
+
+1. **Read the lessons file.**
+   `.claude/skills/fndr-v2-engineering/references/lessons.md` is the distilled
+   memory of every mistake that cost time. Assume at least one applies to you.
+2. **Navigate before you write.** Search the workspace for an existing
+   implementation or near-miss; check the ADR-005 PORT list before writing
+   from scratch. Parallel versions are how v1 got two rerankers.
+3. **Name the tests before the code.** Write down the test names (including
+   the negative and failure-path tests) the slice must ship with. If a test
+   is hard to name, the seam is wrong.
+4. **Enumerate the gates this change must pass.** fmt and clippy under
+   `-D warnings` (edition 2024 rules included), workspace lints (egress,
+   no-tauri), cargo-deny (a new dependency can fail bans or licenses
+   transitively), AGENTS.md drift, bench baseline if ranking-adjacent, the
+   bindings sync test if IPC-adjacent. Run the relevant ones locally before
+   pushing, not in CI roulette.
+5. **Verify third-party API shapes against the pinned source, not memory.**
+   Crates in this stack (specta rc line, lancedb, rmcp, ureq) drift between
+   versions; read the vendored source in `~/.cargo/registry` or fetch the
+   crate before coding against a remembered API.
+6. **Register every artifact where its runner expects it.** A migration file
+   is not a migration until the runner's array includes it; a binding is not
+   generated until the builder collects it; a CI step is not a gate until the
+   workflow names it. After creating any registered-by-list artifact, grep
+   for the list and confirm membership.
+7. **State the typed failure path.** What does the user or caller see when
+   this feature's dependency is missing or its operation fails? "Nothing"
+   is the v1 answer and it is banned (invariant 4).
+8. **Check the docs blast radius.** Which of PRD, roadmap, ADRs, ARCHITECTURE
+   move together with this change? List them in the plan so the PR carries
+   them, not a follow-up.
+9. **Estimate the CI cost.** A heavy new dependency changes every future CI
+   run (lance added ~17 minutes uncached). Know before you add.
+10. **Confirm the branch and repo context.** Work happens in FNDR-2.0 on a
+    feature branch; the guard hook resolves branches from the session cwd,
+    so open sessions inside the repo you are changing.
+
+<!-- Inlined from .claude/skills/fndr-feature-dev/references/feature-planning.md -->
+
+# Feature plan template
+
+Keep the whole plan under a page. Delete sections that honestly do not apply
+rather than padding them.
+
+```
+## <feature name>
+
+Problem: <one sentence: who hurts, when, and how this fixes it>
+PRD tie: <goal G1..G5 or pain-point row; or "none" and stop>
+User: <builder / agent / evaluator>
+Smallest valuable version: <the cut line>
+Demo relevance: <none | which beat, product capability only>
+
+ADR touchpoints: <ADRs read; conflicts and how resolved; amendments needed>
+Existing code/tickets reused: <what was found in the navigate-before-write search>
+
+Slices (each = behavior + tests + docs, one reviewable unit):
+1. <slice, with its named tests>
+2. ...
+
+Bench/eval impact: <none | which metric could move; baseline plan>
+Typed failure path: <what shows when dependencies are missing or calls fail>
+Docs moving together: <PRD / roadmap / ADR / ARCHITECTURE edits in the same PR>
+Gates: <the preflight item-4 list relevant to this change>
+
+Tickets: <new or re-scoped ticket lines in roadmap format>
+```
