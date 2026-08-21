@@ -8,20 +8,35 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 SKILL=.claude/skills/fndr-v2-engineering
+FEATURE=.claude/skills/fndr-feature-dev
 OUT=AGENTS.md
+
+strip_frontmatter() {
+  awk 'BEGIN{fm=0} /^---$/{fm++; next} fm!=1' "$1"
+}
 
 generate() {
   echo "<!-- GENERATED FILE, DO NOT EDIT. -->"
-  echo "<!-- Source: $SKILL/  Regenerate: scripts/gen-agents-md.sh -->"
+  echo "<!-- Sources: $SKILL/ and $FEATURE/  Regenerate: scripts/gen-agents-md.sh -->"
   echo "<!-- References below are inlined; a pointer to references/<name>.md resolves to the matching section. -->"
-  awk 'BEGIN{fm=0} /^---$/{fm++; next} fm!=1' "$SKILL/SKILL.md"
-  for ref in invariants lanes workflows ai-collaboration; do
-    echo
-    echo "---"
+  strip_frontmatter "$SKILL/SKILL.md"
+  # lessons.md is inlined so every tool and teammate inherits the learning
+  # loop automatically; the drift check is the sync mechanism.
+  for ref in invariants lanes workflows ai-collaboration lessons; do
     echo
     echo "<!-- Inlined from $SKILL/references/$ref.md -->"
     echo
     cat "$SKILL/references/$ref.md"
+  done
+  echo
+  echo "<!-- Inlined from $FEATURE/SKILL.md -->"
+  echo
+  strip_frontmatter "$FEATURE/SKILL.md"
+  for ref in right-first-try feature-planning; do
+    echo
+    echo "<!-- Inlined from $FEATURE/references/$ref.md -->"
+    echo
+    cat "$FEATURE/references/$ref.md"
   done
 }
 
