@@ -1,6 +1,10 @@
 # FNDR v2: Product Requirements Document
 
-Status: Approved 2026-08-20 (drafted 2026-08-19; revised 2026-08-20: team pain points folded in, plan-review fixes applied per `review/REVIEW-2026-08-20.md`; owner defaults recorded in section 13). Implementation started 2026-08-20; progress ledger in `docs/ROADMAP-TICKETS.md`. Produced from the v2 discovery brief, a full code audit of the v1 proof of concept, and fresh technology research. Companion documents: `docs/ARCHITECTURE.md`, `docs/decisions/ADR-001` through `ADR-007`, `docs/ROADMAP-TICKETS.md`.
+Status: Approved 2026-08-20 (drafted 2026-08-19; revised 2026-08-20: team pain points folded in, plan-review fixes applied per `review/REVIEW-2026-08-20.md`; owner defaults recorded in section 13). Implementation started 2026-08-20; progress ledger in `docs/ROADMAP-TICKETS.md`.
+
+**Priority insertion (2026-08-21, owner mandate):** Codebase Memory, a reusable codebase-intelligence subsystem (persistent AST-derived code knowledge graph with graph-first retrieval and Claude Code integration, installable into arbitrary repositories), is the top-priority feature going forward. Scope of record: `docs/specs/codebase-memory-brief.md`. Roadmap: epic E16 (kickoff T-1601 produces the implementation plan before any code). Its schemas stay isolated from the user-memory system per the brief. Scheduling against existing milestones is resolved at sprint planning.
+
+Produced from the v2 discovery brief, a full code audit of the v1 proof of concept, and fresh technology research. Companion documents: `docs/ARCHITECTURE.md`, `docs/decisions/ADR-001` through `ADR-007`, `docs/ROADMAP-TICKETS.md`.
 
 ---
 

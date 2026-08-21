@@ -326,9 +326,34 @@ comment linking the PR).
 
 ---
 
+## E16 · Codebase Memory (owner mandate 2026-08-21: top priority)
+
+A reusable codebase-intelligence subsystem: persistent AST-derived code
+knowledge graph, graph-first retrieval, and Claude Code integration,
+FNDR-first but installable into arbitrary repositories. The document of
+record for scope is `docs/specs/codebase-memory-brief.md`; do not re-derive
+its requirements here. Keep its schemas isolated from user memory (brief
+section 21). Milestone placement is decided at sprint planning against the
+deferred capacity re-cut; the owner set this above existing feature work.
+
+- **T-1601 · Codebase Memory kickoff: inspection and implementation plan** `lane::backend` `prio::p0` deps: none
+  Execute brief section 28: inspect the existing CLI, crates, persistence, MCP, and agent integration surfaces, then produce the implementation plan (modules, graph schema, indexing, retrieval, Claude Code integration, storage choice, incremental strategy, testing, phase order) as an ADR plus plan doc. No code before the plan. AC: plan reviewed; phase tickets below re-cut into real tickets appended to this epic.
+- **T-1602 · Phase 1: AST extraction, graph schema, persistent storage, basic CLI** `lane::backend` `prio::p0` deps: T-1601
+  AC: a repository indexes locally and deterministically; the graph survives process exit; fixture-repo tests define expected nodes and edges.
+- **T-1603 · Phase 2: relationship resolution, traversal, impact analysis** `lane::backend` `prio::p0` deps: T-1602
+  AC: callers/dependents/path/impact queries return compact subgraphs with provenance and confidence; ambiguity preserved, never fabricated.
+- **T-1604 · Phase 3: Claude Code skill, MCP interface, graph-first retrieval** `lane::backend` `prio::p0` deps: T-1603
+  AC: a fresh Claude Code session discovers and queries the graph before broad exploration (graph first, source second, raw search when necessary); raw tools never blocked.
+- **T-1605 · Phase 4: incremental updates, git integration, architecture summaries** `lane::backend` `prio::p0` deps: T-1604
+  AC: changed files reindex incrementally (never full rebuilds); GRAPH_REPORT projection regenerates; stale-state detection via file hash, parser version, schema version, commit.
+- **T-1606 · Phase 5: semantic enrichment, rationale/ADR links, visualization** `lane::backend` `prio::p1` deps: T-1605
+  AC: enrichment is optional, explicit, and local-capable; extracted rationale distinguished from inferred; visualization supports filtered exploration.
+
+---
+
 ## Import notes (GitLab)
 
 1. Create the six milestones and the label set (Conventions above) once, manually.
 2. Either import `tickets.csv` (Issues > Import CSV; descriptions carry `/label` and `/milestone` quick actions so metadata applies on creation), or create issues per epic from this file.
 3. Dependencies are recorded in each description (`deps:`); GitLab linked-issues can be added lazily as work approaches.
-4. Epics: if on GitLab Premium, create E01 to E15 as epics and assign; on Free, the `epic::Exx` labels serve as the grouping.
+4. Epics: if on GitLab Premium, create E01 to E16 as epics and assign; on Free, the `epic::Exx` labels serve as the grouping.
