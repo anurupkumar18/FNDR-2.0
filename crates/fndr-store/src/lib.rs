@@ -14,7 +14,7 @@ mod store;
 
 pub use lance_writer::{
     FLUSH_BATCH_SIZE, FLUSH_INTERVAL_SECS_MAX, FLUSH_INTERVAL_SECS_MIN, FlushError, FlushReport,
-    LanceWriter,
+    LanceWriter, RebuildReport,
 };
 pub use skeleton::{SearchHit, SkeletonStore};
 pub use store::{NewChunk, NewRecord, PendingChunk, Store, StoreError};
