@@ -7,7 +7,10 @@ use rusqlite::Connection;
 use crate::StoreError;
 
 /// Append-only. Never edit a shipped migration; add the next file.
-const MIGRATIONS: &[&str] = &[include_str!("migrations/0001_schema_v1.sql")];
+const MIGRATIONS: &[&str] = &[
+    include_str!("migrations/0001_schema_v1.sql"),
+    include_str!("migrations/0002_chunk_flush.sql"),
+];
 
 pub fn schema_version() -> i64 {
     MIGRATIONS.len() as i64
