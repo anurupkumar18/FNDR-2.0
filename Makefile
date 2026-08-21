@@ -18,7 +18,10 @@ test-rust:
 test-ui:
 	cd ui && npm run typecheck && npm test
 
+# FTS baseline on the sample corpus (format fixture, not an eval instrument;
+# see bench/README.md). Real corpora and routes land with E05. Fails on any
+# quality regression against the committed baseline.
 bench:
-	@echo "make bench: the fndr-bench harness is not implemented yet (E05)."
-	@echo "Failing loudly so nothing mistakes this for a measured pass."
-	@exit 2
+	cargo run -q -p fndr-bench -- --corpus bench/corpus-sample \
+		--baseline bench/baselines/corpus-sample.fts_baseline.json \
+		--out target/bench-metrics.json

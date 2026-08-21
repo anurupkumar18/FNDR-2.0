@@ -1,6 +1,10 @@
 //! Deliberately minimal store for the walking skeleton (T-109): one records
 //! table, an external-content FTS5 index, insert and search. WAL mode from
 //! day one because the real store (T-201) will live in WAL.
+//!
+//! FTS uses the porter stemmer: the bench sample exposed that unstemmed
+//! unicode61 misses morphological variants ("index" vs "indexes"), and the
+//! keyword route in the real stack needs stemming for the same reason.
 
 use std::path::Path;
 
@@ -50,7 +54,8 @@ impl SkeletonStore {
             CREATE VIRTUAL TABLE IF NOT EXISTS records_fts USING fts5(
                 text,
                 content='records',
-                content_rowid='id'
+                content_rowid='id',
+                tokenize='porter unicode61'
             );
             CREATE TRIGGER IF NOT EXISTS records_ai AFTER INSERT ON records BEGIN
                 INSERT INTO records_fts(rowid, text) VALUES (new.id, new.text);
@@ -74,6 +79,22 @@ impl SkeletonStore {
             (captured_at_ms, source, text),
         )?;
         Ok(self.conn.last_insert_rowid())
+    }
+
+    /// Insert preserving the caller's id (bench corpora reference records by
+    /// id, so load order must not renumber them).
+    pub fn insert_record_with_id(
+        &self,
+        id: i64,
+        captured_at_ms: i64,
+        source: &str,
+        text: &str,
+    ) -> Result<(), StoreError> {
+        self.conn.execute(
+            "INSERT INTO records (id, captured_at_ms, source, text) VALUES (?1, ?2, ?3, ?4)",
+            (id, captured_at_ms, source, text),
+        )?;
+        Ok(())
     }
 
     pub fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchHit>, StoreError> {

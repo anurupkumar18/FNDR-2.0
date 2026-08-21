@@ -1,0 +1,12 @@
+{"id": 1, "source": "screen", "captured_at_ms": 1755660000000, "text": "Pull request review: the lance flush writer retries on failure and leaves sqlite intact. Reviewer asked for a crash recovery test before merge."}
+{"id": 2, "source": "screen", "captured_at_ms": 1755660060000, "text": "Figma mockup for the onboarding permission flow. Trust screen shows the live egress counter at zero before asking for screen recording."}
+{"id": 3, "source": "screen", "captured_at_ms": 1755660120000, "text": "Terminal: cargo test output for the retrieval crate, four fusion tests passing, one reranker ablation ignored pending model download."}
+{"id": 4, "source": "meeting", "captured_at_ms": 1755660180000, "text": "Standup notes: Priya owns the model registry ticket, checksum verification blocked on picking a hash format, decided sha256 in the manifest."}
+{"id": 5, "source": "screen", "captured_at_ms": 1755660240000, "text": "Browser: LanceDB documentation page about scalar indexes and metadata prefiltering for hybrid vector search."}
+{"id": 6, "source": "screen", "captured_at_ms": 1755660300000, "text": "Slack thread about the demo script: counterfactual cut first, then the privacy negative with the password manager on camera."}
+{"id": 7, "source": "screen", "captured_at_ms": 1755660360000, "text": "Code editor: writing the deletion-everywhere path, records cascade to chunks and graph edges, retention job runs it nightly."}
+{"id": 8, "source": "meeting", "captured_at_ms": 1755660420000, "text": "Design review: the omnibar keeps the v1 keyboard model, escape closes, arrow keys cycle results, enter copies the evidence pack."}
+{"id": 9, "source": "screen", "captured_at_ms": 1755660480000, "text": "Spreadsheet: quarterly budget for the bench reference machine, one M1 with 8 gigabytes, latency numbers only published from it."}
+{"id": 10, "source": "screen", "captured_at_ms": 1755660540000, "text": "Email draft to the team about GitLab board conventions, lane labels and milestone names, CSV import steps for the roadmap."}
+{"id": 11, "source": "screen", "captured_at_ms": 1755660600000, "text": "Terminal: rustup toolchain install pinned via rust-toolchain.toml, clippy and rustfmt components, same version across all four machines."}
+{"id": 12, "source": "screen", "captured_at_ms": 1755660660000, "text": "Notes app: interview story outline, the walking skeleton shipped in week one instead of week three, findings folded into the ADRs."}
