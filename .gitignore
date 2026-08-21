@@ -1,0 +1,22 @@
+# Rust
+target/
+
+# Node
+node_modules/
+dist/
+coverage/
+
+# macOS
+.DS_Store
+
+# Local data: never commit captures, databases, models, or logs
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+/data/
+/models/
+/logs/
+
+# Env and editor
+.env
+*.local
