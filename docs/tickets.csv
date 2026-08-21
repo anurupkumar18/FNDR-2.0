@@ -665,6 +665,18 @@ deps: T-702
 
 /label ~""lane::ml"" ~""prio::p0"" ~""epic::E13""
 /milestone %""M3-AgentContext"""
+"T-1307 · Claude Code session warm-start hook","A repo-installable hook plus MCP flow that injects 'what was I doing in this project' (from the warm-start file or a live context pack) into a fresh agent session automatically; zero-invocation daily value (owner-selected 2026-08-21). AC: a fresh Claude Code session in a captured project answers 'where did I leave off' with no manual prompt; degrades silently to nothing when FNDR is not running, never blocking the session.
+
+deps: T-702, T-1306
+
+/label ~""lane::backend"" ~""prio::p1"" ~""epic::E13""
+/milestone %""M3-AgentContext"""
+"T-1308 · Result feedback capture loop","One-tap good/bad on results in the search UI plus wiring the founding fndr.feedback MCP tool; both export labelled pairs into the bench corpus pipeline so daily use improves retrieval quality (owner-selected 2026-08-21). AC: feedback lands as labelled pairs a bench corpus build can consume; no feedback data ever leaves the machine.
+
+deps: T-1002, T-512
+
+/label ~""lane::frontend"" ~""prio::p1"" ~""epic::E13""
+/milestone %""M2-Retrieval"""
 "T-1401 · Token system and palettes port","cinematic-palettes with tests, semantic tokens, dark/light. AC: v1 palette tests green; no raw hex in components (lint).
 
 deps: T-1001

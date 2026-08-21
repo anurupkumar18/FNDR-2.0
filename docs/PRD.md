@@ -159,6 +159,8 @@ The feature cannot ship without these; each maps to tickets in `ROADMAP-TICKETS.
 - Proactive resurfacing toasts; clipboard autofill overlay.
 - Grounded Q&A (`fndr.answer`) tool over context packs with per-claim citation checks (T-711).
 - Session Story (`fndr.session_story`): cited narrative of a captured work session, exportable for demos, interviews, and standups (T-709).
+- Claude Code session warm-start hook: a fresh agent session opens already knowing "what was I doing in this project", no manual prompt; silently absent when FNDR is not running (T-1307, owner-selected 2026-08-21).
+- Result feedback capture loop: one-tap good/bad in the search UI plus the `fndr.feedback` MCP tool, exported as labelled pairs into FNDR-Bench so daily use improves retrieval quality; feedback never leaves the machine (T-1308, owner-selected 2026-08-21).
 - x86_64 build target.
 
 (Project context file export was promoted into the month-3 spine as P0, T-1306: it is the daily retention loop.)
@@ -203,6 +205,8 @@ Two macro-phases with a hard gate between them. Detailed epics and tickets in `R
 - **Month 3, agent context.** Context-pack quality hardening (budgets, citations), delta tool, retrieval explanation, remaining canonical tools, the project warm-start file export (the daily retention loop), backup/export/restore, backfill importers, capture-explain, onboarding with connect-your-agent, and the gate dry-run two weeks before the gate closes.
 
 **Month-3 demo gate (P0.6).** On a clean machine: install from a URL, work normally for a day, connect Claude Code or Claude Desktop to FNDR via MCP, ask the agent to resume yesterday's work; the agent produces a correct, cited context pack; blocklisted and sensitive content from the day is verifiably absent, shown live (visit a bank and a password manager on camera, then prove absence in the vault, the pack, and privacy_status). The script is staged as a counterfactual cut: the same agent task with FNDR off (the agent interrogates the user), then on (one tool call). The whole flow is captured as the demo video draft, and a dry-run of the script executes two weeks before the gate closes. **If the gate fails, months 4 to 6 start by fixing the spine, not by adding features.**
+
+Two later demo beats extend the same script with product capability only, never staging tricks (owner direction 2026-08-21): the self-demo recursion, where `fndr.session_story` (T-709, M5) reconstructs with citations the very session in which the demoed feature was built, and the Codebase Memory beat, where the agent answers architecture questions about a repository it has never read via the E16 graph. Both feed the month-6 demo video; neither is a month-3 gate criterion (the Codebase Memory beat is contingent on E16 phase 3).
 
 ### Months 4 to 6: the surround
 
