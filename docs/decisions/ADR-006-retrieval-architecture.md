@@ -48,3 +48,7 @@ The chosen shape trades novelty-for-novelty's-sake for measurability: the resear
 ## Amendment (2026-08-20, plan review)
 
 The review found the original design tuning on its own test set and measuring retrieval but not faithfulness; decision point 5 was rewritten accordingly (frozen held-out split, faithfulness slice, naive-RAG baseline, agreement statistics, split CI lanes). The +15 Recall@5 headline moved to a stretch figure in the PRD until first real numbers exist.
+
+## Amendment (2026-08-21, implementation learnings)
+
+Two facts from the bench skeleton and walking skeleton now bind the keyword route (T-505): tokenizers without stemming miss morphological variants (the sample corpus scored 0 recall on "index" vs "indexes" until the skeleton store's FTS switched to a porter tokenizer; verify the Lance FTS tokenizer configuration handles stemming before relying on it), and the naive FTS baseline this ADR requires now exists as a measured, committed number (`make bench`, bench/baselines/) that every ranked route must beat rather than a plan-time aspiration.

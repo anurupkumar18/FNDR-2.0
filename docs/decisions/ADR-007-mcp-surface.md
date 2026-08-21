@@ -65,3 +65,7 @@ The main tension is capability breadth vs agent usability and security surface. 
 2. [ ] Remaining tools plus resources and prompts (month 3).
 3. [ ] Contract doc with per-tool schemas and the v1-to-v2 tool mapping (month 3).
 4. [ ] Connect-your-agent onboarding step with Claude Desktop/Code snippets (month 3).
+
+## Amendment (2026-08-21, walking skeleton validation)
+
+The `fndr.` dotted tool namespace is confirmed legal per the MCP tool-name specification (letters, digits, underscore, dash, dot; validated in the official Rust SDK), so the inventory keeps its names unchanged. The auth-always posture shipped with the first tool: bearer with constant-time compare, Host and Origin allowlists, a global rate limit, uniform deny bodies with audit logging, and the named regression tests (`mcp_rejects_unauthenticated_loopback`, web-origin rejection with a valid token) exercising the real socket with raw HTTP. Note for T-701: rmcp 3.1's streamable HTTP server carries its own Host/Origin allowlist configuration underneath our middleware; keep both layers (defense in depth).

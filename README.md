@@ -2,7 +2,7 @@
 
 Local-first screen-context memory engine for macOS. FNDR watches your screen (with consent and strict privacy gates), builds a searchable memory of what you worked on, and serves that memory to AI agents over MCP. Everything runs on-device; nothing derived from captured data ever leaves your machine.
 
-Status: pre-alpha groundwork. The approved plan lives in `docs/` (PRD, ADRs under `docs/decisions/`, architecture, roadmap). Nothing user-facing is built yet.
+Status: pre-alpha, M1 foundations in progress. The approved plan lives in `docs/` (PRD, ADRs under `docs/decisions/`, architecture, roadmap with a progress ledger). Working today: the walking skeleton (one frame captured, OCRed with Apple Vision, stored, and served to agents over authenticated MCP; see Try it below), schema v1 with migrations, the ported v1 perception heuristics, and a real `make bench` retrieval gate with a committed baseline.
 
 ## Layout
 

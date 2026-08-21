@@ -10,6 +10,29 @@ Status: proposed 2026-08-19; revised 2026-08-20 (team pain points folded in; pla
 - **Ticket format:** each ticket is one list item: id, title, then backticked labels, then `deps:`. The indented line is the description; `AC:` is the acceptance criterion. Estimates are deliberately omitted; the team sizes tickets at sprint planning.
 - Port tickets follow ADR-005: ported code arrives with tests and a provenance note.
 
+## Progress ledger
+
+Updated as tickets land; the ticket list below stays the import source of
+record. Before importing `tickets.csv` into GitLab, delete the rows for
+tickets listed here as done (or import everything and close them with a
+comment linking the PR).
+
+| Ticket | Status | Where |
+|---|---|---|
+| T-101 bootstrap monorepo + reference/v1 | Done 2026-08-20 | initial main history; reference/v1 locked read-only |
+| T-102 CI test gate + make targets | Done 2026-08-20 | `.github/workflows/ci.yml`; `make bench` real since PR #6 |
+| T-103 egress lint | Done 2026-08-20 | scripts/workspace-lints.sh + deny.toml (negative-tested) |
+| T-104 engine-no-tauri check | Done 2026-08-20 | scripts/workspace-lints.sh (negative-tested) |
+| T-105 generated TS bindings | Done 2026-08-20 | PR #3 (pins per ADR-001; sync test; raw-invoke ban) |
+| T-106 skill + CONTRIBUTING | Done 2026-08-20 | `.claude/skills/fndr-v2-engineering/`, CONTRIBUTING.md |
+| T-107 AGENTS.md mirror + drift check | Done 2026-08-20 | scripts/gen-agents-md.sh, CI guard |
+| T-108 env bootstrap, four machines | Partial | this machine bare-to-green; scripts/dev-setup.sh for the rest |
+| T-109 walking skeleton | Done 2026-08-20 | PR #4; runner: `cargo run -p fndr-mcp --example skeleton`; findings in journal |
+| T-201 SQLite schema v1 + migrations | Done 2026-08-21 | PR #8; journal 2026-08-21-schema-v1 |
+| T-208 Lance spike | Done 2026-08-21, GO | PR #10; `docs/spikes/T-208-lance-findings.md`; ADR-002 amended |
+| T-301 textsignal port | Done 2026-08-21 | PR #5 (15 v1 tests) |
+| E05 head start (bench harness) | Skeleton done | PR #6: corpus format, FTS baseline route, regression gate in CI; full FNDR-Bench remains T-501+ |
+
 ---
 
 ## E01 · Repo and CI foundations (M1)
