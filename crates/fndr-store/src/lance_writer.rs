@@ -198,4 +198,42 @@ impl LanceWriter {
             batch_was_full: pending.len() == FLUSH_BATCH_SIZE,
         })
     }
+
+    /// `fndr index rebuild` (T-205): drop the derived table and re-flush
+    /// everything from SQLite truth. The recovery answer for any Lance
+    /// corruption, schema change, or crash-window duplicate: the index is
+    /// disposable, the truth is not (ADR-002).
+    pub async fn rebuild(
+        &self,
+        store: &mut Store,
+        embedder: &dyn Embedder,
+        now_ms: i64,
+    ) -> Result<RebuildReport, FlushError> {
+        let db = lancedb::connect(&self.uri).execute().await?;
+        match db.drop_table(embedder.spec().lance_table, &[]).await {
+            Ok(()) => {}
+            Err(lancedb::Error::TableNotFound { .. }) => {}
+            Err(e) => return Err(e.into()),
+        }
+        store.reset_flush_state()?;
+
+        let mut report = RebuildReport {
+            chunks: 0,
+            batches: 0,
+        };
+        loop {
+            let flush = self.flush_once(store, embedder, now_ms).await?;
+            if flush.written == 0 {
+                return Ok(report);
+            }
+            report.chunks += flush.written;
+            report.batches += 1;
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RebuildReport {
+    pub chunks: usize,
+    pub batches: usize,
 }
