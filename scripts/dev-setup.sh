@@ -15,6 +15,11 @@ if ! command -v node >/dev/null 2>&1; then
   echo "Node 20+ is required and not on PATH (use nvm, asdf, or brew)." >&2
   exit 1
 fi
+
+if ! command -v protoc >/dev/null 2>&1; then
+  echo "note: protoc not found. Lance work (spikes/, T-202+) needs it:"
+  echo "  brew install protobuf"
+fi
 (cd ui && npm install)
 
 make test
