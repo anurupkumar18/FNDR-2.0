@@ -953,6 +953,12 @@ dependencies = [
 [[package]]
 name = "fndr-bench"
 version = "2.0.0-dev"
+dependencies = [
+ "fndr-store",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+]
 
 [[package]]
 name = "fndr-capture"

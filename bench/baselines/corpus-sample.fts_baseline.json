@@ -1,0 +1,60 @@
+{
+  "route": "fts_baseline",
+  "corpus": "corpus-sample",
+  "n_records": 12,
+  "n_queries": 8,
+  "recall_at_5": 1.0,
+  "mrr_at_10": 1.0,
+  "latency_ms_p50": 0.30129100000000003,
+  "latency_ms_p95": 0.5475420000000001,
+  "per_query": [
+    {
+      "query": "crash recovery flush writer",
+      "recall_at_5": 1.0,
+      "reciprocal_rank_at_10": 1.0,
+      "returned": 1
+    },
+    {
+      "query": "onboarding permission trust screen",
+      "recall_at_5": 1.0,
+      "reciprocal_rank_at_10": 1.0,
+      "returned": 1
+    },
+    {
+      "query": "model registry checksum",
+      "recall_at_5": 1.0,
+      "reciprocal_rank_at_10": 1.0,
+      "returned": 1
+    },
+    {
+      "query": "scalar index prefiltering",
+      "recall_at_5": 1.0,
+      "reciprocal_rank_at_10": 1.0,
+      "returned": 1
+    },
+    {
+      "query": "demo script privacy negative",
+      "recall_at_5": 1.0,
+      "reciprocal_rank_at_10": 1.0,
+      "returned": 1
+    },
+    {
+      "query": "deletion retention",
+      "recall_at_5": 1.0,
+      "reciprocal_rank_at_10": 1.0,
+      "returned": 1
+    },
+    {
+      "query": "omnibar keyboard",
+      "recall_at_5": 1.0,
+      "reciprocal_rank_at_10": 1.0,
+      "returned": 1
+    },
+    {
+      "query": "toolchain pinned machines",
+      "recall_at_5": 1.0,
+      "reciprocal_rank_at_10": 1.0,
+      "returned": 1
+    }
+  ]
+}
