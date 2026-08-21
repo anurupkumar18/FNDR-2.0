@@ -1021,6 +1021,9 @@ dependencies = [
 [[package]]
 name = "fndr-privacy"
 version = "2.0.0-dev"
+dependencies = [
+ "url",
+]
 
 [[package]]
 name = "fndr-retrieval"

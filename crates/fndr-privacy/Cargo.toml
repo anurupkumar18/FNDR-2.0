@@ -5,3 +5,5 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+# URL parsing only (host extraction); the url crate performs no I/O.
+url = "2"
