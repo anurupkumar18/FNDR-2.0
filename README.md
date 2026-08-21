@@ -14,10 +14,25 @@ Status: pre-alpha groundwork. The approved plan lives in `docs/` (PRD, ADRs unde
 ## Development
 
 ```sh
-make test
+scripts/dev-setup.sh   # bare checkout to green gate (installs pinned Rust)
+make test              # full local gate: lints, fmt, clippy, cargo test, tsc, vitest
+make bench             # retrieval metrics vs the committed baseline
 ```
 
-runs the full local gate (fmt, clippy, cargo test, tsc, vitest). See `CONTRIBUTING.md` for conventions.
+See `CONTRIBUTING.md` for conventions.
+
+## Try it
+
+The walking skeleton captures one frame, OCRs it, stores it, and serves it to
+AI agents over authenticated MCP:
+
+```sh
+cargo run -p fndr-mcp --example skeleton
+```
+
+It prints the `claude mcp add` line to connect Claude Code. Pass
+`--image <png>` to run from a screenshot file without any permissions, or
+`--query <text>` for a one-shot search instead of serving.
 
 ## v1 reference
 
