@@ -1,0 +1,94 @@
+//! T-109 walking skeleton runner. Deliberately ugly; every stage it strings
+//! together already lives in its real crate.
+//!
+//! One frame in, memory out, served over authenticated MCP:
+//!
+//! ```sh
+//! # From a screenshot file (no permissions needed):
+//! cargo run -p fndr-mcp --example skeleton -- --image path/to/screen.png
+//!
+//! # From the live screen (grants Screen Recording to your terminal):
+//! cargo run -p fndr-mcp --example skeleton
+//!
+//! # One-shot search instead of serving:
+//! cargo run -p fndr-mcp --example skeleton -- --image x.png --query "hello"
+//! ```
+
+use fndr_capture::{FrameSource, PngFileSource, ScreencaptureCliSource};
+use fndr_mcp::{FndrMcpServer, generate_token, serve_loopback};
+use fndr_ocr::OcrEngine;
+use fndr_store::SkeletonStore;
+
+fn main() {
+    tracing_subscriber::fmt().init();
+
+    let mut image: Option<String> = None;
+    let mut query: Option<String> = None;
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--image" => image = args.next(),
+            "--query" => query = args.next(),
+            other => {
+                eprintln!("unknown arg: {other}");
+                std::process::exit(2);
+            }
+        }
+    }
+
+    let frame = match &image {
+        Some(path) => PngFileSource { path: path.into() }.grab(),
+        None => ScreencaptureCliSource.grab(),
+    };
+    let frame = match frame {
+        Ok(frame) => frame,
+        Err(e) => {
+            // Typed, loud, and actionable: the invariant-4 behavior.
+            eprintln!("capture failed: {e}");
+            eprintln!("hint: pass --image <png> to run without screen recording permission");
+            std::process::exit(1);
+        }
+    };
+    println!("captured {} bytes of PNG", frame.png.len());
+
+    let engine = OcrEngine::new().expect("Vision framework unavailable");
+    let recognized = engine
+        .recognize_with_metadata(&frame.png)
+        .expect("ocr failed");
+    println!(
+        "ocr: {} chars, {} blocks, confidence {:.2}",
+        recognized.0.text.len(),
+        recognized.0.block_count,
+        recognized.0.confidence
+    );
+
+    let store = SkeletonStore::open_in_memory().expect("store");
+    store
+        .insert_record(frame.captured_at_ms as i64, "screen", &recognized.0.text)
+        .expect("insert");
+    println!("stored 1 record");
+
+    if let Some(q) = query {
+        for hit in store.search(&q, 10).expect("search") {
+            println!("hit #{}: {}", hit.record_id, hit.snippet);
+        }
+        return;
+    }
+
+    let token = generate_token();
+    let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
+    runtime.block_on(async move {
+        let (addr, handle) = serve_loopback(FndrMcpServer::new(store), token.clone(), 0)
+            .await
+            .expect("serve");
+        println!("\nMCP serving at http://{addr}/mcp");
+        println!("Authorization: Bearer {token}");
+        println!("\nAdd to Claude Code:");
+        println!(
+            "  claude mcp add fndr --transport http http://{addr}/mcp --header \"Authorization: Bearer {token}\""
+        );
+        println!("\nCtrl-C to stop.");
+        let _ = tokio::signal::ctrl_c().await;
+        handle.abort();
+    });
+}
