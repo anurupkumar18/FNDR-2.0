@@ -1,6 +1,6 @@
 # FNDR v2: Product Requirements Document
 
-Status: Draft for review (2026-08-19; revised 2026-08-20: team pain points folded in, plan-review fixes applied per `review/REVIEW-2026-08-20.md`). Produced from the v2 discovery brief, a full code audit of the v1 proof of concept, and fresh technology research. Companion documents: `docs/ARCHITECTURE.md`, `docs/decisions/ADR-001` through `ADR-007`, `docs/ROADMAP-TICKETS.md`.
+Status: Approved 2026-08-20 (drafted 2026-08-19; revised 2026-08-20: team pain points folded in, plan-review fixes applied per `review/REVIEW-2026-08-20.md`; owner defaults recorded in section 13). Implementation started 2026-08-20; progress ledger in `docs/ROADMAP-TICKETS.md`. Produced from the v2 discovery brief, a full code audit of the v1 proof of concept, and fresh technology research. Companion documents: `docs/ARCHITECTURE.md`, `docs/decisions/ADR-001` through `ADR-007`, `docs/ROADMAP-TICKETS.md`.
 
 ---
 
