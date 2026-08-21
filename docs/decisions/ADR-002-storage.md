@@ -71,3 +71,7 @@ The core insight from both the audit and research: every embedded retrieval stru
 ## Amendment (2026-08-20, plan review)
 
 Due diligence confirmed both the failure mode (version/fragment sprawl under single-record writes, documented upstream) and this ADR's counter-pattern as the maintainer-recommended one. Item 2's acceptance was respecified and item 4 added. Budget roughly 2x live-index disk headroom during compaction. Pin the lancedb crate version exactly (fast release cadence, no 1.0; the underlying format is declared stable with compatibility commitments).
+
+## Amendment (2026-08-21, T-208 spike result)
+
+The spike measured everything this ADR assumes, from Rust, on a 100k-row 768d fixture: GO on the index design. Measured behavior and the resulting directives for T-202/T-203/T-204 are in `docs/spikes/T-208-lance-findings.md`. The two binding corrections: default prune reclaims nothing for our write pattern (the maintenance scheduler must prune explicitly with `older_than=0` plus `delete_unverified=true`, safe under the instance lock), and IVF_PQ builds are tens of seconds at 100k rows so vector-index creation is background maintenance while BTree and FTS indexes are created with the table.

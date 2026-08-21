@@ -153,17 +153,20 @@ async fn main() {
             ],
         )
         .expect("batch");
-        let reader = RecordBatchIterator::new(vec![Ok(batch)], schema.clone());
+        let reader: Box<dyn arrow_array::RecordBatchReader + Send> =
+            Box::new(RecordBatchIterator::new(vec![Ok(batch)], schema.clone()));
         match &table {
             None => {
                 table = Some(
-                    db.create_table("chunks_spike", Box::new(reader))
+                    db.create_table("chunks_spike", reader)
                         .execute()
                         .await
                         .expect("create table"),
                 );
             }
-            Some(t) => t.add(Box::new(reader)).execute().await.expect("append"),
+            Some(t) => {
+                t.add(reader).execute().await.expect("append");
+            }
         }
     }
     let table = table.expect("table");
@@ -340,6 +343,40 @@ async fn main() {
         before_size,
         dir_size_mb(std::path::Path::new(&dir)),
     );
+
+    // Default prune keeps versions younger than the retention window and
+    // files newer than 7 days, so a single-process engine must prune
+    // explicitly to actually reclaim disk (T-204's real behavior).
+    let stats = timed("  explicit prune (older_than=0, delete_unverified)", async {
+        table
+            .optimize(OptimizeAction::Prune {
+                older_than: Some(lancedb::table::Duration::zero()),
+                delete_unverified: Some(true),
+                error_if_tagged_old_versions: None,
+            })
+            .await
+            .expect("prune")
+    })
+    .await;
+    println!(
+        "  explicit prune stats: {:?}; size now {:.1} MB",
+        stats.prune,
+        dir_size_mb(std::path::Path::new(&dir)),
+    );
+
+    let (_, ids) = timed("  vector ANN top10 after prune", async {
+        let stream = table
+            .query()
+            .nearest_to(probe.clone())
+            .expect("q")
+            .limit(10)
+            .execute()
+            .await
+            .expect("exec");
+        count_hits(stream).await
+    })
+    .await;
+    assert_eq!(ids.first(), Some(&4242), "pruned table must still search");
 
     println!("spike complete");
 }
