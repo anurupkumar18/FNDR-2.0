@@ -7,6 +7,7 @@ test: lint test-rust test-ui
 
 lint:
 	scripts/workspace-lints.sh
+	scripts/ui-lints.sh
 	scripts/gen-agents-md.sh --check
 
 test-rust:

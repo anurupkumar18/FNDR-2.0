@@ -3,6 +3,13 @@
 # these bans catch them arriving transitively. `wrappers` permits a banned
 # crate only underneath the two egress-allowed crates.
 
+# FNDR is macOS-only (PRD locked decision). Checking only Apple desktop
+# targets keeps the graph honest: it prunes Linux gtk/webkit and the
+# iOS/Android-gated reqwest inside tauri, none of which can compile here,
+# while the bans stay meaningful for code that actually runs.
+[graph]
+targets = ["aarch64-apple-darwin", "x86_64-apple-darwin"]
+
 [bans]
 multiple-versions = "warn"
 deny = [
@@ -30,6 +37,17 @@ allow = [
 
 [advisories]
 yanked = "deny"
+# Unmaintained (not vulnerable) proc-macro and unicode-table crates inside the
+# pinned specta/tauri stack; nothing we can swap without leaving the stack.
+# Re-check at each scheduled binding-generator upgrade PR (ADR-001).
+ignore = [
+    { id = "RUSTSEC-2024-0436", reason = "paste, via specta rc.25" },
+    { id = "RUSTSEC-2025-0075", reason = "unic-* family, via urlpattern in tauri-utils" },
+    { id = "RUSTSEC-2025-0080", reason = "unic-* family, via urlpattern in tauri-utils" },
+    { id = "RUSTSEC-2025-0081", reason = "unic-* family, via urlpattern in tauri-utils" },
+    { id = "RUSTSEC-2025-0098", reason = "unic-* family, via urlpattern in tauri-utils" },
+    { id = "RUSTSEC-2025-0100", reason = "unic-* family, via urlpattern in tauri-utils" },
+]
 
 [sources]
 unknown-registry = "deny"

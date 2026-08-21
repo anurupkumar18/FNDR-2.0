@@ -45,6 +45,7 @@ jobs:
       - name: Install pinned toolchain
         run: rustup show active-toolchain || rustup toolchain install
       - run: scripts/workspace-lints.sh
+      - run: scripts/ui-lints.sh
       - run: scripts/gen-agents-md.sh --check
 
   cargo-deny:
