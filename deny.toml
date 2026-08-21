@@ -1,0 +1,36 @@
+# cargo-deny config (T-103, ADR-004): defense in depth behind
+# scripts/workspace-lints.sh. The script catches direct HTTP client deps;
+# these bans catch them arriving transitively. `wrappers` permits a banned
+# crate only underneath the two egress-allowed crates.
+
+[bans]
+multiple-versions = "warn"
+deny = [
+    { crate = "reqwest", wrappers = ["fndr-downloader", "fndr-updater"] },
+    { crate = "ureq", wrappers = ["fndr-downloader", "fndr-updater"] },
+    { crate = "curl", wrappers = ["fndr-downloader", "fndr-updater"] },
+    { crate = "isahc", wrappers = ["fndr-downloader", "fndr-updater"] },
+    { crate = "attohttpc", wrappers = ["fndr-downloader", "fndr-updater"] },
+    { crate = "surf", wrappers = ["fndr-downloader", "fndr-updater"] },
+]
+
+[licenses]
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "MPL-2.0",
+    "CDLA-Permissive-2.0",
+]
+
+[advisories]
+yanked = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
