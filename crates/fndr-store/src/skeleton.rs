@@ -10,11 +10,7 @@ use std::path::Path;
 
 use rusqlite::Connection;
 
-#[derive(Debug, thiserror::Error)]
-pub enum StoreError {
-    #[error("sqlite error: {0}")]
-    Sqlite(#[from] rusqlite::Error),
-}
+use crate::StoreError;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SearchHit {

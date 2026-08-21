@@ -7,3 +7,6 @@ license.workspace = true
 [dependencies]
 rusqlite = { version = "0.40", features = ["bundled"] }
 thiserror = "2"
+
+[dev-dependencies]
+fndr-types = { path = "../fndr-types" }

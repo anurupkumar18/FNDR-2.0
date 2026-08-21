@@ -9,6 +9,10 @@
 //! counts, or f64 millisecond timestamps. Widening that needs an ADR-001
 //! amendment, not a local exporter setting.
 
+mod lifecycle;
+
+pub use lifecycle::{ReviewLifecycle, TaskStatus, UnknownDiscriminant};
+
 use serde::Serialize;
 use specta::Type;
 

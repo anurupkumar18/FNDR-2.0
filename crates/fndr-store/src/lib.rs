@@ -1,9 +1,15 @@
 //! SQLite schema and migrations, the single Lance writer, batched flush, compaction, rebuild, deletion-everywhere.
 //!
-//! Walking-skeleton state (T-109): a minimal records table plus FTS5 search,
-//! enough to prove capture-to-retrieval end to end. The real schema v1 with
-//! migrations is T-201; Lance and the flush writer are T-202.
+//! `Store` is the system of record: schema v1 (T-201) with forward-only
+//! embedded migrations. Domain APIs land with their pipeline tickets; the
+//! Lance writer and flush are T-202.
+//!
+//! `SkeletonStore` is the walking-skeleton stand-in (T-109); it dies when the
+//! real read/write paths replace it in E02/E03.
 
+mod migrations;
 mod skeleton;
+mod store;
 
-pub use skeleton::{SearchHit, SkeletonStore, StoreError};
+pub use skeleton::{SearchHit, SkeletonStore};
+pub use store::{Store, StoreError};
