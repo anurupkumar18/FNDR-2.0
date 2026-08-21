@@ -116,7 +116,11 @@ mod tests {
     fn insert_and_search_round_trip() {
         let store = SkeletonStore::open_in_memory().unwrap();
         store
-            .insert_record(1000, "screen", "reviewing the quarterly retrieval benchmark numbers")
+            .insert_record(
+                1000,
+                "screen",
+                "reviewing the quarterly retrieval benchmark numbers",
+            )
             .unwrap();
         store
             .insert_record(2000, "screen", "editing the walking skeleton design note")
@@ -142,7 +146,9 @@ mod tests {
     #[test]
     fn delete_trigger_keeps_fts_in_sync() {
         let store = SkeletonStore::open_in_memory().unwrap();
-        let id = store.insert_record(1000, "screen", "ephemeral note").unwrap();
+        let id = store
+            .insert_record(1000, "screen", "ephemeral note")
+            .unwrap();
         store
             .conn
             .execute("DELETE FROM records WHERE id = ?1", [id])
