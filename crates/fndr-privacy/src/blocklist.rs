@@ -29,7 +29,7 @@ fn normalize_app(entry: &str) -> String {
         .to_lowercase()
 }
 
-fn normalize_domain(entry: &str) -> Option<String> {
+pub(crate) fn normalize_domain(entry: &str) -> Option<String> {
     let trimmed = entry.trim().trim_start_matches('.').to_lowercase();
     // Accept either a bare host ("bank.com") or a pasted URL.
     let host = if trimmed.contains("://") {
@@ -42,11 +42,18 @@ fn normalize_domain(entry: &str) -> Option<String> {
 
 /// True when `host` equals `suffix` or is a subdomain of it, on label
 /// boundaries. "bank.com" matches "online.bank.com", never "burbank.com".
-fn host_matches_suffix(host: &str, suffix: &str) -> bool {
+pub(crate) fn host_matches_suffix(host: &str, suffix: &str) -> bool {
     host == suffix
         || (host.len() > suffix.len()
             && host.ends_with(suffix)
             && host.as_bytes()[host.len() - suffix.len() - 1] == b'.')
+}
+
+pub(crate) fn host_from_url(url: &str) -> Option<String> {
+    Url::parse(url.trim())
+        .ok()
+        .and_then(|url| url.host_str().map(|host| host.to_lowercase()))
+        .or_else(|| normalize_domain(url))
 }
 
 impl Blocklist {
@@ -89,19 +96,8 @@ impl Blocklist {
     /// covers itself and its subdomains; it never escalates to a parent
     /// domain and never matches inside path, query, or unrelated hosts.
     pub fn blocks_url(&self, url: &str) -> bool {
-        let Some(host) = Url::parse(url.trim())
-            .ok()
-            .and_then(|u| u.host_str().map(|h| h.to_lowercase()))
-        else {
-            // Not parseable as an absolute URL: try it as a bare host, the
-            // shape window titles and address bars often provide.
-            let Some(host) = normalize_domain(url) else {
-                return false;
-            };
-            return self
-                .domains
-                .iter()
-                .any(|suffix| host_matches_suffix(&host, suffix));
+        let Some(host) = host_from_url(url) else {
+            return false;
         };
         self.domains
             .iter()

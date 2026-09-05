@@ -17,6 +17,7 @@
 use fndr_capture::{FrameSource, PngFileSource, ScreencaptureCliSource};
 use fndr_mcp::{FndrMcpServer, generate_token, serve_loopback};
 use fndr_ocr::OcrEngine;
+use fndr_privacy::{Blocklist, SafetyContext, SafetyDecision, evaluate, redact_secret_lines};
 use fndr_store::SkeletonStore;
 
 fn main() {
@@ -24,11 +25,17 @@ fn main() {
 
     let mut image: Option<String> = None;
     let mut query: Option<String> = None;
+    let mut app_name: Option<String> = None;
+    let mut url: Option<String> = None;
+    let mut window_title: Option<String> = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--image" => image = args.next(),
             "--query" => query = args.next(),
+            "--app" => app_name = args.next(),
+            "--url" => url = args.next(),
+            "--title" => window_title = args.next(),
             other => {
                 eprintln!("unknown arg: {other}");
                 std::process::exit(2);
@@ -51,6 +58,22 @@ fn main() {
     };
     println!("captured {} bytes of PNG", frame.png.len());
 
+    let blocklist = Blocklist::default();
+    let pre_ocr_decision = evaluate(
+        SafetyContext {
+            app_name: app_name.as_deref(),
+            bundle_id: None,
+            url: url.as_deref(),
+            window_title: window_title.as_deref(),
+            ocr_text: None,
+        },
+        &blocklist,
+    );
+    if let SafetyDecision::SkipStorage(reason) = pre_ocr_decision {
+        eprintln!("capture skipped before OCR: {reason:?}");
+        std::process::exit(3);
+    }
+
     let engine = OcrEngine::new().expect("Vision framework unavailable");
     let recognized = engine
         .recognize_with_metadata(&frame.png)
@@ -62,9 +85,32 @@ fn main() {
         recognized.0.confidence
     );
 
+    let decision = evaluate(
+        SafetyContext {
+            app_name: app_name.as_deref(),
+            bundle_id: None,
+            url: url.as_deref(),
+            window_title: window_title.as_deref(),
+            ocr_text: Some(&recognized.0.text),
+        },
+        &blocklist,
+    );
+    let text = match decision {
+        SafetyDecision::Allow => recognized.0.text,
+        SafetyDecision::Redact(reason) => {
+            let (redacted, count) = redact_secret_lines(&recognized.0.text);
+            println!("redacted {count} OCR line(s): {reason:?}");
+            redacted
+        }
+        SafetyDecision::SkipStorage(reason) => {
+            eprintln!("capture skipped after OCR: {reason:?}");
+            std::process::exit(3);
+        }
+    };
+
     let store = SkeletonStore::open_in_memory().expect("store");
     store
-        .insert_record(frame.captured_at_ms as i64, "screen", &recognized.0.text)
+        .insert_record(frame.captured_at_ms as i64, "screen", &text)
         .expect("insert");
     println!("stored 1 record");
 

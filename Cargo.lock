@@ -2377,6 +2377,7 @@ dependencies = [
  "axum",
  "fndr-capture",
  "fndr-ocr",
+ "fndr-privacy",
  "fndr-store",
  "getrandom 0.3.4",
  "rmcp",
