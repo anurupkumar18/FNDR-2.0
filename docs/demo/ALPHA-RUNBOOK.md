@@ -52,7 +52,8 @@ Expected evidence:
 - both runs report real OCR block and confidence data;
 - the first reports `total records: 1` and the second `total records: 2`;
 - the second search returns two FTS hits containing the fixture text; and
-- the current skeleton passes OCR text, not image bytes, into its store call.
+- the raw-PNG negative test confirms that the fixture bytes are absent from
+  the SQLite database, WAL, and SHM artifacts after OCR text is stored.
 
 Narrate: "This is a synthetic fixture. The point is that the same local
 SQLite-backed memory survives a process restart and is returned by the MCP

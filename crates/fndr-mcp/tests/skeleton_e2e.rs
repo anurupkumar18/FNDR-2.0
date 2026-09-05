@@ -60,3 +60,46 @@ fn privacy_status_reports_posture_without_exposing_entries() {
     assert_eq!(status.configured_blocked_domains, 1);
     assert!(!status.raw_pixels_persisted);
 }
+
+#[test]
+fn raw_png_bytes_are_absent_from_every_skeleton_store_artifact() {
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../fndr-ocr/tests/fixtures/skeleton_fixture.png");
+    let frame = PngFileSource { path: fixture }
+        .grab()
+        .expect("fixture frame");
+    let recognized = OcrEngine::new()
+        .expect("Vision available")
+        .recognize(&frame.png)
+        .expect("ocr");
+
+    let database_path = std::env::temp_dir().join(format!(
+        "fndr-no-pixels-{}-{}.sqlite3",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("wall clock after Unix epoch")
+            .as_nanos()
+    ));
+
+    {
+        let store = SkeletonStore::open(&database_path).expect("open persistent store");
+        store
+            .insert_record(frame.captured_at_ms as i64, "screen", &recognized)
+            .expect("store OCR text only");
+    }
+
+    for suffix in ["", "-wal", "-shm"] {
+        let path = format!("{}{}", database_path.display(), suffix);
+        if let Ok(bytes) = std::fs::read(&path) {
+            assert!(
+                !bytes
+                    .windows(frame.png.len())
+                    .any(|window| window == frame.png.as_slice()),
+                "raw PNG bytes leaked into {}",
+                path
+            );
+        }
+        let _ = std::fs::remove_file(path);
+    }
+}
