@@ -100,7 +100,9 @@ cargo run -p fndr-mcp --example skeleton -- \
 Expected evidence: it prints a loopback endpoint and a new bearer token. The
 test suite already proves missing bearer tokens and cross-origin requests are
 rejected. Never paste the generated token into a screen recording or commit
-it to a document.
+it to a document. An authenticated agent can also call `fndr.privacy_status`
+to see the local-default flag, planner-disabled flag, and configured
+blocklist counts without receiving the blocklist entries.
 
 ### 5. Cleanup
 

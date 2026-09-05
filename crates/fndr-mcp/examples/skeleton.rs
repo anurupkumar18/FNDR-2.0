@@ -150,7 +150,7 @@ fn main() {
     let token = generate_token();
     let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
     runtime.block_on(async move {
-        let (addr, handle) = serve_loopback(FndrMcpServer::new(store), token.clone(), 0)
+        let (addr, handle) = serve_loopback(FndrMcpServer::with_blocklist(store, blocklist), token.clone(), 0)
             .await
             .expect("serve");
         println!("\nMCP serving at http://{addr}/mcp");

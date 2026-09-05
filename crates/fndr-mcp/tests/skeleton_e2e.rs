@@ -3,8 +3,9 @@
 //! the same search call the fndr.search tool serves.
 
 use fndr_capture::{FrameSource, PngFileSource};
-use fndr_mcp::{FndrMcpServer, SearchParams};
+use fndr_mcp::{FndrMcpServer, PrivacyStatusParams, SearchParams};
 use fndr_ocr::OcrEngine;
+use fndr_privacy::Blocklist;
 use fndr_store::SkeletonStore;
 use rmcp::handler::server::wrapper::Parameters;
 
@@ -39,4 +40,23 @@ fn capture_ocr_store_search_round_trip() {
         .expect("tool call");
     assert_eq!(result.0.hits.len(), 1);
     assert_eq!(result.0.hits[0].source, "screen");
+}
+
+#[test]
+fn privacy_status_reports_posture_without_exposing_entries() {
+    let server = FndrMcpServer::with_blocklist(
+        SkeletonStore::open_in_memory().unwrap(),
+        Blocklist::new(&["Figma", "1Password"], &["bank.com"]),
+    );
+
+    let status = server
+        .privacy_status(Parameters(PrivacyStatusParams {}))
+        .expect("privacy status tool call")
+        .0;
+
+    assert!(status.local_default);
+    assert!(!status.planner_enabled);
+    assert_eq!(status.configured_blocked_apps, 2);
+    assert_eq!(status.configured_blocked_domains, 1);
+    assert!(!status.raw_pixels_persisted);
 }

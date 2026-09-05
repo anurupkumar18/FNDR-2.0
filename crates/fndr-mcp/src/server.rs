@@ -16,6 +16,7 @@ use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, Stream
 use rmcp::{ErrorData, tool, tool_router};
 use serde::{Deserialize, Serialize};
 
+use fndr_privacy::Blocklist;
 use fndr_store::SkeletonStore;
 
 use crate::auth::{AuthConfig, RateWindow, check_request};
@@ -47,18 +48,36 @@ pub struct SearchOutput {
     pub hits: Vec<SearchHitOut>,
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema, Default)]
+pub struct PrivacyStatusParams {}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct PrivacyStatusOutput {
+    pub local_default: bool,
+    pub planner_enabled: bool,
+    pub configured_blocked_apps: u32,
+    pub configured_blocked_domains: u32,
+    pub raw_pixels_persisted: bool,
+}
+
 #[derive(Clone)]
 pub struct FndrMcpServer {
     // Mutex because rusqlite's Connection is Send but not Sync. The real
     // engine gets a proper connection strategy with T-201.
     store: Arc<Mutex<SkeletonStore>>,
+    blocklist: Blocklist,
 }
 
 #[tool_router(server_handler)]
 impl FndrMcpServer {
     pub fn new(store: SkeletonStore) -> Self {
+        Self::with_blocklist(store, Blocklist::default())
+    }
+
+    pub fn with_blocklist(store: SkeletonStore, blocklist: Blocklist) -> Self {
         Self {
             store: Arc::new(Mutex::new(store)),
+            blocklist,
         }
     }
 
@@ -88,6 +107,23 @@ impl FndrMcpServer {
                     snippet: h.snippet,
                 })
                 .collect(),
+        }))
+    }
+
+    #[tool(
+        name = "fndr.privacy_status",
+        description = "Reports FNDR's active local privacy posture and configured blocklist counts without exposing blocklist entries."
+    )]
+    pub fn privacy_status(
+        &self,
+        Parameters(PrivacyStatusParams {}): Parameters<PrivacyStatusParams>,
+    ) -> Result<Json<PrivacyStatusOutput>, ErrorData> {
+        Ok(Json(PrivacyStatusOutput {
+            local_default: true,
+            planner_enabled: false,
+            configured_blocked_apps: self.blocklist.app_count(),
+            configured_blocked_domains: self.blocklist.domain_count(),
+            raw_pixels_persisted: false,
         }))
     }
 }

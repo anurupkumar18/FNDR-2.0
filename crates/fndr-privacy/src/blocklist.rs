@@ -92,6 +92,14 @@ impl Blocklist {
         })
     }
 
+    pub fn app_count(&self) -> u32 {
+        self.apps.len() as u32
+    }
+
+    pub fn domain_count(&self) -> u32 {
+        self.domains.len() as u32
+    }
+
     /// Suffix-domain matching on the parsed host only. A blocked domain
     /// covers itself and its subdomains; it never escalates to a parent
     /// domain and never matches inside path, query, or unrelated hosts.

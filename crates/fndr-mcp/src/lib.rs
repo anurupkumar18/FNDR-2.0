@@ -10,4 +10,7 @@ mod auth;
 mod server;
 
 pub use auth::{AuthConfig, generate_token};
-pub use server::{FndrMcpServer, SearchHitOut, SearchOutput, SearchParams, serve_loopback};
+pub use server::{
+    FndrMcpServer, PrivacyStatusOutput, PrivacyStatusParams, SearchHitOut, SearchOutput,
+    SearchParams, serve_loopback,
+};
