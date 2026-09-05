@@ -30,6 +30,8 @@ fn main() {
     let mut app_name: Option<String> = None;
     let mut url: Option<String> = None;
     let mut window_title: Option<String> = None;
+    let mut blocked_apps: Vec<String> = Vec::new();
+    let mut blocked_domains: Vec<String> = Vec::new();
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -39,6 +41,20 @@ fn main() {
             "--app" => app_name = args.next(),
             "--url" => url = args.next(),
             "--title" => window_title = args.next(),
+            "--block-app" => {
+                let Some(app) = args.next() else {
+                    eprintln!("--block-app requires an app name");
+                    std::process::exit(2);
+                };
+                blocked_apps.push(app);
+            }
+            "--block-domain" => {
+                let Some(domain) = args.next() else {
+                    eprintln!("--block-domain requires a domain");
+                    std::process::exit(2);
+                };
+                blocked_domains.push(domain);
+            }
             other => {
                 eprintln!("unknown arg: {other}");
                 std::process::exit(2);
@@ -61,7 +77,7 @@ fn main() {
     };
     println!("captured {} bytes of PNG", frame.png.len());
 
-    let blocklist = Blocklist::default();
+    let blocklist = Blocklist::new(&blocked_apps, &blocked_domains);
     let pre_ocr_decision = evaluate(
         SafetyContext {
             app_name: app_name.as_deref(),

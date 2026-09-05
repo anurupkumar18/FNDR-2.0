@@ -73,7 +73,21 @@ Expected evidence: the command exits with code `3` and prints
 Narrate: "The fixture never reaches OCR when its app context is a password
 manager. This is a visible policy decision, not a silent skip."
 
-### 3. Authenticated MCP surface
+### 3. Owner-configured blocklist negative
+
+```sh
+cargo run -p fndr-mcp --example skeleton -- \
+  --image crates/fndr-ocr/tests/fixtures/skeleton_fixture.png \
+  --url https://docs.example.com/fndr --block-domain example.com \
+  --store "$alpha_db" --query "quick brown fox"
+```
+
+Expected evidence: the command exits with code `3` and prints
+`capture skipped before OCR: UserBlocklist`. Use this to explain that the
+same policy has safe suffix-domain matching; a blocked `example.com` covers
+its subdomains, not unrelated strings that merely contain that text.
+
+### 4. Authenticated MCP surface
 
 Start the example without `--query` and follow its printed connection snippet:
 
@@ -88,7 +102,7 @@ test suite already proves missing bearer tokens and cross-origin requests are
 rejected. Never paste the generated token into a screen recording or commit
 it to a document.
 
-### 4. Cleanup
+### 5. Cleanup
 
 After the process stops, remove only the temporary directory created above:
 
