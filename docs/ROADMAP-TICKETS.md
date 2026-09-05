@@ -34,6 +34,7 @@ comment linking the PR).
 | T-301 textsignal port | Done 2026-08-21 | PR #5 (15 v1 tests) |
 | E05 head start (bench harness) | Skeleton done | PR #6: corpus format, FTS baseline route, regression gate in CI; full FNDR-Bench remains T-501+ |
 | T-801 blocklist v2 | Done 2026-08-21 | PR #13; v1 false-positive classes pinned as tests |
+| T-802 sensitive-context detection as data | Partial 2026-09-05 | `SensitiveContextPolicy` in `fndr-privacy/src/safety_gate.rs`; built-in lists are now owner-constructible data with parity/override tests. Still missing: an alert queue with dismissal keys, and a caller that actually loads overrides from `settings` or disk. |
 
 ---
 

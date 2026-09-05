@@ -6,7 +6,7 @@
 //! substring matching for both user blocklists and domains.
 
 use crate::Blocklist;
-use crate::blocklist::{host_from_url, host_matches_suffix};
+use crate::blocklist::{host_from_url, host_matches_suffix, normalize_domain};
 
 const PASSWORD_MANAGER_NAMES: &[&str] = &[
     "1password",
@@ -101,7 +101,107 @@ pub struct SafetyContext<'a> {
     pub ocr_text: Option<&'a str>,
 }
 
+/// The built-in sensitive-context lists (T-802), as owner-editable data
+/// instead of compiled-in constants. `default()` reproduces exactly the
+/// behavior of the original hardcoded lists; a caller that needs to add or
+/// remove entries constructs its own policy with [`SensitiveContextPolicy::new`]
+/// and passes it to [`evaluate_with_policy`] / [`redact_secret_lines_with_policy`].
+/// This crate does no file or database I/O itself (ADR-004 posture); a caller
+/// that wants to load overrides from disk or `settings` does so and hands the
+/// parsed values here.
+#[derive(Debug, Clone)]
+pub struct SensitiveContextPolicy {
+    password_manager_names: Vec<String>,
+    financial_domains: Vec<String>,
+    medical_domain_markers: Vec<String>,
+    auth_indicators: Vec<String>,
+    secret_patterns: Vec<String>,
+}
+
+impl SensitiveContextPolicy {
+    /// Entries are normalized the same way as `Blocklist`: names/indicators/
+    /// patterns are lowercased and trimmed, domains are parsed to a bare host
+    /// so suffix matching stays safe against scheme/port/case spoofing.
+    pub fn new<S: AsRef<str>>(
+        password_manager_names: &[S],
+        financial_domains: &[S],
+        medical_domain_markers: &[S],
+        auth_indicators: &[S],
+        secret_patterns: &[S],
+    ) -> Self {
+        let normalize_word = |entries: &[S]| -> Vec<String> {
+            entries
+                .iter()
+                .map(|e| e.as_ref().trim().to_ascii_lowercase())
+                .filter(|e| !e.is_empty())
+                .collect()
+        };
+        Self {
+            password_manager_names: normalize_word(password_manager_names),
+            financial_domains: financial_domains
+                .iter()
+                .filter_map(|e| normalize_domain(e.as_ref()))
+                .collect(),
+            medical_domain_markers: normalize_word(medical_domain_markers),
+            auth_indicators: normalize_word(auth_indicators),
+            secret_patterns: normalize_word(secret_patterns),
+        }
+    }
+}
+
+impl Default for SensitiveContextPolicy {
+    fn default() -> Self {
+        Self::new(
+            PASSWORD_MANAGER_NAMES,
+            FINANCIAL_DOMAINS,
+            MEDICAL_DOMAIN_MARKERS,
+            AUTH_INDICATORS,
+            SECRET_PATTERNS,
+        )
+    }
+}
+
 pub fn evaluate(context: SafetyContext<'_>, blocklist: &Blocklist) -> SafetyDecision {
+    evaluate_core(
+        context,
+        blocklist,
+        PASSWORD_MANAGER_NAMES,
+        FINANCIAL_DOMAINS,
+        MEDICAL_DOMAIN_MARKERS,
+        AUTH_INDICATORS,
+        SECRET_PATTERNS,
+    )
+}
+
+/// Same policy, with the built-in sensitive-context lists replaced by an
+/// owner-provided [`SensitiveContextPolicy`] (T-802). The blocklist (user
+/// app/domain exclusions) is unaffected; it is a separate mechanism.
+pub fn evaluate_with_policy(
+    context: SafetyContext<'_>,
+    blocklist: &Blocklist,
+    policy: &SensitiveContextPolicy,
+) -> SafetyDecision {
+    evaluate_core(
+        context,
+        blocklist,
+        &policy.password_manager_names,
+        &policy.financial_domains,
+        &policy.medical_domain_markers,
+        &policy.auth_indicators,
+        &policy.secret_patterns,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn evaluate_core<S: AsRef<str>>(
+    context: SafetyContext<'_>,
+    blocklist: &Blocklist,
+    password_manager_names: &[S],
+    financial_domains: &[S],
+    medical_domain_markers: &[S],
+    auth_indicators: &[S],
+    secret_patterns: &[S],
+) -> SafetyDecision {
     let app = context.app_name.unwrap_or("").to_ascii_lowercase();
     let title = context.window_title.unwrap_or("").to_ascii_lowercase();
     let url = context.url.unwrap_or("");
@@ -119,7 +219,10 @@ pub fn evaluate(context: SafetyContext<'_>, blocklist: &Blocklist) -> SafetyDeci
         return SafetyDecision::SkipStorage(SafetyReason::FndrSelfCapture);
     }
 
-    if PASSWORD_MANAGER_NAMES.iter().any(|name| app.contains(name)) {
+    if password_manager_names
+        .iter()
+        .any(|name| app.contains(name.as_ref()))
+    {
         return SafetyDecision::SkipStorage(SafetyReason::PasswordManager);
     }
 
@@ -129,22 +232,24 @@ pub fn evaluate(context: SafetyContext<'_>, blocklist: &Blocklist) -> SafetyDeci
         return SafetyDecision::SkipStorage(SafetyReason::PrivateBrowsing);
     }
 
-    if matches_financial_site(url) {
+    if matches_domain_suffix(url, financial_domains) {
         return SafetyDecision::SkipStorage(SafetyReason::FinancialSite);
     }
 
-    if matches_medical_site(url) {
+    if matches_domain_label(url, medical_domain_markers) {
         return SafetyDecision::SkipStorage(SafetyReason::MedicalSite);
     }
 
-    if AUTH_INDICATORS
-        .iter()
-        .any(|indicator| title.contains(indicator) || url_lower.contains(indicator))
-    {
+    if auth_indicators.iter().any(|indicator| {
+        title.contains(indicator.as_ref()) || url_lower.contains(indicator.as_ref())
+    }) {
         return SafetyDecision::SkipStorage(SafetyReason::Authentication);
     }
 
-    if context.ocr_text.is_some_and(contains_secret_pattern) {
+    if context
+        .ocr_text
+        .is_some_and(|text| contains_secret_pattern(text, secret_patterns))
+    {
         return SafetyDecision::Redact(SafetyReason::SecretPattern);
     }
 
@@ -152,11 +257,24 @@ pub fn evaluate(context: SafetyContext<'_>, blocklist: &Blocklist) -> SafetyDeci
 }
 
 pub fn redact_secret_lines(text: &str) -> (String, usize) {
+    redact_secret_lines_matching(text, SECRET_PATTERNS)
+}
+
+/// Same redaction, with the built-in secret patterns replaced by the
+/// policy's (T-802).
+pub fn redact_secret_lines_with_policy(
+    text: &str,
+    policy: &SensitiveContextPolicy,
+) -> (String, usize) {
+    redact_secret_lines_matching(text, &policy.secret_patterns)
+}
+
+fn redact_secret_lines_matching<S: AsRef<str>>(text: &str, patterns: &[S]) -> (String, usize) {
     let mut redaction_count = 0;
     let redacted = text
         .lines()
         .map(|line| {
-            if contains_secret_pattern(line) {
+            if contains_secret_pattern(line, patterns) {
                 redaction_count += 1;
                 "[REDACTED: secret pattern]"
             } else {
@@ -168,26 +286,28 @@ pub fn redact_secret_lines(text: &str) -> (String, usize) {
     (redacted, redaction_count)
 }
 
-fn matches_financial_site(url: &str) -> bool {
+fn matches_domain_suffix<S: AsRef<str>>(url: &str, domains: &[S]) -> bool {
     let Some(host) = host_from_url(url) else {
         return false;
     };
-    FINANCIAL_DOMAINS
+    domains
         .iter()
-        .any(|domain| host_matches_suffix(&host, domain))
+        .any(|domain| host_matches_suffix(&host, domain.as_ref()))
 }
 
-fn matches_medical_site(url: &str) -> bool {
+fn matches_domain_label<S: AsRef<str>>(url: &str, markers: &[S]) -> bool {
     let Some(host) = host_from_url(url) else {
         return false;
     };
     host.split('.')
-        .any(|label| MEDICAL_DOMAIN_MARKERS.contains(&label))
+        .any(|label| markers.iter().any(|m| m.as_ref() == label))
 }
 
-fn contains_secret_pattern(text: &str) -> bool {
+fn contains_secret_pattern<S: AsRef<str>>(text: &str, patterns: &[S]) -> bool {
     let text = text.to_ascii_lowercase();
-    SECRET_PATTERNS.iter().any(|pattern| text.contains(pattern))
+    patterns
+        .iter()
+        .any(|pattern| text.contains(pattern.as_ref()))
 }
 
 #[cfg(test)]
@@ -319,8 +439,91 @@ mod tests {
 
     #[test]
     fn financial_domain_matching_rejects_substring_spoofs() {
-        assert!(matches_financial_site("https://online.chase.com/account"));
-        assert!(!matches_financial_site("https://notchase.com/account"));
-        assert!(!matches_financial_site("https://example.com/chase.com"));
+        assert!(matches_domain_suffix(
+            "https://online.chase.com/account",
+            FINANCIAL_DOMAINS
+        ));
+        assert!(!matches_domain_suffix(
+            "https://notchase.com/account",
+            FINANCIAL_DOMAINS
+        ));
+        assert!(!matches_domain_suffix(
+            "https://example.com/chase.com",
+            FINANCIAL_DOMAINS
+        ));
+    }
+
+    #[test]
+    fn default_policy_matches_built_in_lists_exactly() {
+        let policy = SensitiveContextPolicy::default();
+        let blocklist = Blocklist::default();
+        let cases = [
+            (Some("1Password"), None, Some("Vault"), None),
+            (
+                Some("Safari"),
+                Some("https://online.chase.com/account"),
+                Some("Account overview"),
+                None,
+            ),
+            (
+                Some("Safari"),
+                Some("https://mychart.example-hospital.com/"),
+                Some("Results"),
+                None,
+            ),
+            (
+                Some("Safari"),
+                Some("https://example.com/login"),
+                Some("Sign in"),
+                None,
+            ),
+            (
+                Some("Terminal"),
+                None,
+                Some("shell"),
+                Some("export API_KEY=top-secret"),
+            ),
+        ];
+        for (app, url, title, ocr) in cases {
+            let ctx = context(app, None, url, title, ocr);
+            assert_eq!(
+                evaluate(ctx, &blocklist),
+                evaluate_with_policy(ctx, &blocklist, &policy),
+                "default policy diverged from built-in lists for {app:?}/{url:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn custom_policy_overrides_rather_than_unions_the_built_in_lists() {
+        // A policy naming a company's own vault app blocks it, and the
+        // built-in "1password" name is absent because this policy replaces
+        // rather than extends the defaults (mirrors Blocklist's contract).
+        let policy =
+            SensitiveContextPolicy::new(&["mycompany-vault"], &[], &[], &[], &["internal-secret:"]);
+        let blocklist = Blocklist::default();
+
+        assert_eq!(
+            evaluate_with_policy(
+                context(Some("MyCompany-Vault"), None, None, Some("Vault"), None),
+                &blocklist,
+                &policy,
+            ),
+            SafetyDecision::SkipStorage(SafetyReason::PasswordManager)
+        );
+        assert_eq!(
+            evaluate_with_policy(
+                context(Some("1Password"), None, None, Some("Vault"), None),
+                &blocklist,
+                &policy,
+            ),
+            SafetyDecision::Allow,
+            "custom policy replaces the built-in password-manager list, it does not extend it"
+        );
+
+        let (redacted, count) =
+            redact_secret_lines_with_policy("note\ninternal-secret: shh\nmore", &policy);
+        assert_eq!(count, 1);
+        assert_eq!(redacted, "note\n[REDACTED: secret pattern]\nmore");
     }
 }
