@@ -77,3 +77,25 @@ The 1,913-line capture loop; the 5,197-line MCP module and its mode matrix; the 
 1. [ ] Import the POC repo as `reference/v1` branch in the new repo at bootstrap.
 2. [ ] Create the port checklist as tracked tickets (`ROADMAP-TICKETS.md` carries them per epic).
 3. [ ] Add the provenance-note convention to the repo engineering skill.
+
+## Amendment (2026-09-05, alpha donor matrix)
+
+The semester execution plan narrows the early reuse decision further. The
+legacy repository is a reference donor for the alpha only; it is never a
+fallback mainline. Each candidate below requires its own targeted port commit,
+tests, and provenance note before it can be considered shipped in v2.
+
+| Legacy asset | Decision | Alpha handling | Explicit exclusion |
+| --- | --- | --- | --- |
+| Pre-OCR sensitive-context guard in `src-tauri/src/capture/mod.rs` | Reference | Preserved independently at `codex/p002-sensitive-preocr` / `4f48ae46`; use its regression cases to shape v2 policy replay. | Do not transplant the capture loop or its `SkipReason` plumbing. |
+| `privacy/safety_gate.rs` keyword/domain/pattern data | Targeted data port | Use the lists only, with v2 exact-token and suffix-domain matching, typed reasons, and redaction tests. | Do not carry v1 raw substring matching or its unstructured decision result. |
+| OCR fixture flow and Vision wrapper behavior | Reuse at seam | Keep v2's small `FrameSource` and `OcrEngine` boundaries; compare fixture behavior during alpha. | Do not copy v1 capture orchestration or synchronous hot-path wiring. |
+| `agent/actions.rs`, `approvals.rs`, `audit.rs`, `execution.rs`, and agent panel | Reference only | Use only as product vocabulary and scenario evidence for ADR-008. | No agent runner, shell executor, approval-file format, or UI module port. |
+| `mcp/mod.rs` and its tool set | Vocabulary only | Preserve only canonical tool concepts already ratified in ADR-007. | No server module, transport mode matrix, auth wiring, or duplicate tools. |
+| Existing persistent store/search code | Reimplement on v2 contracts | Use the walking-skeleton FTS path to prove the alpha spine while the real SQLite/Lance contracts replace it. | No old Lance schema, direct query path, or dual retrieval stack. |
+
+For an alpha port review, the author records the legacy path and commit, the
+v2 target path, the test evidence, the defect intentionally not carried over,
+and the deletion or replacement ticket for any temporary skeleton. A legacy
+behavior that cannot meet ADR-004, ADR-006, ADR-007, or ADR-008 is not
+eligible merely because it makes the demo faster.
