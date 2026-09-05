@@ -7,3 +7,7 @@ license.workspace = true
 [dependencies]
 fndr-privacy = { path = "../fndr-privacy" }
 fndr-store = { path = "../fndr-store" }
+
+[dev-dependencies]
+fndr-inference = { path = "../fndr-inference" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

@@ -2475,8 +2475,10 @@ dependencies = [
 name = "fndr-memory"
 version = "2.0.0-dev"
 dependencies = [
+ "fndr-inference",
  "fndr-privacy",
  "fndr-store",
+ "tokio",
 ]
 
 [[package]]
