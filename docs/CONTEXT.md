@@ -45,6 +45,7 @@ and boundaries. The final alpha verification command is `make test`.
 | Privacy | `crates/fndr-privacy/src/safety_gate.rs` | Working deterministic policy and redaction seam; real pipeline/store integration continues in T-803. |
 | OCR | `crates/fndr-ocr/src/vision.rs` | Working Apple Vision wrapper. |
 | Alpha store | `crates/fndr-store/src/skeleton.rs` | Working local FTS proof; deliberately replaced by the real schema/read path, not extended into a second retrieval stack. |
+| Real-store write seam | `crates/fndr-memory/src/write_path.rs` | Working: `persist_capture` rechecks `fndr-privacy::evaluate` immediately before writing an already-assembled capture through `Store::insert_capture`, redacting secret-bearing OCR text first and returning a typed `Stored`/`Skipped` outcome. This is a persistence boundary only; it does not replace the capture scheduler's pre-OCR gate or add a retrieval route. |
 | MCP | `crates/fndr-mcp/src/server.rs` | Working authenticated streamable-HTTP skeleton with search and privacy status. |
 | Planner | ADR-008 and ADR-009 | Contract and evaluation only; no runtime implementation or provider integration. |
 
