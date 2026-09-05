@@ -2,6 +2,7 @@
 
 mod embedding;
 mod gguf_embedder;
+mod model_worker;
 mod registry;
 
 pub use embedding::{
@@ -9,4 +10,5 @@ pub use embedding::{
     query_embedding_text, truncate_and_renormalize,
 };
 pub use gguf_embedder::GgufEmbedder;
+pub use model_worker::{ModelWorkerHandle, Priority};
 pub use registry::{MODELS, ModelArtifact, artifact, bytes_needed};
