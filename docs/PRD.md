@@ -4,7 +4,28 @@ Status: Approved 2026-08-20 (drafted 2026-08-19; revised 2026-08-20: team pain p
 
 **Priority insertion (2026-08-21, owner mandate):** Codebase Memory, a reusable codebase-intelligence subsystem (persistent AST-derived code knowledge graph with graph-first retrieval and Claude Code integration, installable into arbitrary repositories), is the top-priority feature going forward. Scope of record: `docs/specs/codebase-memory-brief.md`. Roadmap: epic E16 (kickoff T-1601 produces the implementation plan before any code). Its schemas stay isolated from the user-memory system per the brief. Scheduling against existing milestones is resolved at sprint planning.
 
-Produced from the v2 discovery brief, a full code audit of the v1 proof of concept, and fresh technology research. Companion documents: `docs/ARCHITECTURE.md`, `docs/decisions/ADR-001` through `ADR-007`, `docs/ROADMAP-TICKETS.md`.
+Produced from the v2 discovery brief, a full code audit of the v1 proof of concept, and fresh technology research. Companion documents: `docs/ARCHITECTURE.md`, `docs/decisions/ADR-001` through `ADR-009`, `docs/ROADMAP-TICKETS.md`.
+
+## Semester execution addendum (2026-09-05)
+
+The original six-month roadmap remains the product horizon. This addendum is
+the delivery contract for the current three-month semester and final
+submission. It overrides schedule language in later sections when the two
+conflict. The canonical mainline is FNDR-2.0; the legacy repository is a
+bounded donor under ADR-005, not an alternative implementation path.
+
+| Phase | Timing | Demonstrable outcome | Cut line |
+| --- | --- | --- | --- |
+| **Alpha** | Weeks 1 to 3 | A local capture or fixture enters persisted memory, policy visibly skips or redacts sensitive context, and an authenticated MCP search returns a cited result. | No graph, meetings, visual search, mobile, or autonomous action execution. |
+| **Beta** | Weeks 4 to 8 | A small dogfood flow supports search/context-pack review, a visible privacy state, and an optional reviewed Connected Planner export that produces proposals only. | Planner remains off by default; only `memory.open_target` and `git.status.short` may be proposed, never executed automatically. |
+| **Final** | Weeks 9 to 12 | A repeatable demo and submission show the local-default journey, an approved minimal export or local-only alternative, cited evidence, a visible privacy negative, and reproducible QA artifacts. | Any feature without a working end-to-end slice and evidence is removed from the demo rather than simulated. |
+
+The alpha demo is deliberately allowed to use checked-in synthetic fixtures;
+it must label them as fixtures. The beta and final demo may use personal
+dogfood only with explicit owner approval and never commit captures or
+databases. Evaluation and claims follow ADR-009. Controlled external-planner
+export follows ADR-004 and ADR-008; it never changes FNDR's local default or
+adds an app-owned cloud client.
 
 ---
 
@@ -23,7 +44,7 @@ The v1 proof of concept (5.5 months, solo, ~111k lines, shipped v0.3.0) proved t
 Positioning pillars (the story every surface tells):
 
 1. **Agent-native.** MCP is the primary interface. The desktop UI consumes the same engine API the agents do.
-2. **Local-only, provably.** Capture, storage, embeddings, and all reasoning over captured data never leave the device. Enforced mechanically (dependency gates in CI), not just promised.
+2. **Local by default, provably.** Capture, storage, embeddings, and local reasoning stay on-device and FNDR has no direct captured-data egress. A separately enabled, per-export reviewed planner mode is explicit about its external-client risk (ADR-004, ADR-008).
 3. **Shows its work.** Every retrieved memory carries a surfacing reason. Every context pack carries citations. Every answer carries a grounded / partial / not-enough-evidence verdict. No silent failure anywhere in the pipeline.
 4. **Measured.** Published retrieval-quality, latency, RAM, and storage numbers from a reproducible benchmark (FNDR-Bench). If a ranking heuristic has no eval number, it does not merge.
 
@@ -60,10 +81,10 @@ Budget notes for G3: idle RSS counts resident pages (mmap-mapped model weights a
 ## 5. Non-goals (v2, 6-month window)
 
 - **No mobile app engineering.** The iOS/Watch companion is deferred. We ship a versioned companion API contract (spec only, month 5) so a companion can attach later. Rationale: the spine must be excellent before satellites.
-- **No cloud or relay component, no opt-in cloud inference.** Local-only is a hard invariant (ADR-004). The engine's API layer is designed so a future self-hosted relay does not force a rewrite, but none is built.
+- **No app-owned cloud or relay component, and no opt-in cloud capture or inference.** FNDR has no provider API key, outbound planner client, remote storage, or background sync. The narrow user-configured external-planner export in ADR-004/ADR-008 is off by default, previewed, one-time approved, and not cloud inference performed by FNDR.
 - **No Windows/Linux.** macOS 14+ only, Apple Silicon primary (an x86_64 target is a P1 stretch). The perception layer is deliberately Apple-native.
 - **No competitor benchmarking in this PRD.** Per discovery ruling, the document argues from the technical vision only.
-- **No autonomous agent execution.** FNDR provides context to agents; it does not run its own tool-executing agent. The POC's agent-runner surface is dropped. Agents get one memory-mutating tool (the decision ledger); feedback is logged append-only and never mutates memories or ranking.
+- **No autonomous agent execution.** FNDR provides context and may display a planner proposal; it does not run an autonomous executor. Alpha and beta recognize only the two ADR-008 proposal capabilities, each requiring a separate owner action approval before any future execution. The POC agent-runner surface is dropped.
 - **No general chatbot.** Grounded Q&A exists as a thin layer over context packs, but the product optimizes for feeding other agents, not for being the chat interface.
 - **No telemetry of any kind.** All quality signals stay local; benchmark numbers come from opt-in local runs.
 
@@ -119,7 +140,7 @@ SQLite (WAL) as the system of record: memory records (split schema, not 104 colu
 Parent-child chunk RAG as the primary design (chunks written and searched from day 1). Hybrid retrieval: vector plus BM25 with RRF fusion, metadata filters, then an optional model reranker stage promoted into the default pipeline only on a measured bench win. Route-based pipeline (vector, keyword, temporal, graph, entity) behind one stack with per-route timeouts and metrics. Explainability: surfacing reasons and per-result signals. FNDR-Bench: a labelled eval corpus (synthetic capture fixtures plus donated real sessions) with a frozen held-out test split that tuning and CI never touch, a faithfulness slice of labelled unanswerable queries (the correct output is NotEnoughEvidence, so overclaiming is a measured regression), real models only, published metrics. Graph-aware retrieval ships only if it beats the hybrid baseline on the bench. Retrieval metrics alone do not prove usefulness, so F4 also owns the context-quality program: a human usefulness rubric scored weekly by all four builders on real queries, and an LLM-judge harness for summary quality; both feed the bench report.
 
 ### F5. MCP server and agent context (phases 2 to 3 core, P1 tools phase 5, the headline)
-Rust MCP SDK, streamable HTTP, current spec. 14 founding tools in one namespace covering: search, context pack (with depth and token budget), timeline, active focus, project context, recall (decisions, errors, blockers, todos), source evidence (raw text gated), graph context, delta-since-timestamp, open target, retrieval explanation, feedback, privacy status, plus one memory-write tool (remember decision); two ratified P1 additions (session story, grounded answer) follow ADR-007's tool-addition rule. Resources and prompt templates carried over from the POC concepts. Auth required in every mode, strict origin and host checks, constant-time token compare, rate limits, audit log. Deployment modes local/tunnel/public with hardened defaults. A first-run "connect your agent" flow (Claude Desktop and Claude Code config snippets) treats agent connection as onboarding, not an advanced feature. P1 addition: `fndr.session_story`, a cited narrative reconstruction of a captured work session (what happened, what changed, why), exportable as a document for demos, interviews, and standups.
+Rust MCP SDK, streamable HTTP, current spec. 14 founding tools in one namespace covering: search, context pack (with depth and token budget), timeline, active focus, project context, recall (decisions, errors, blockers, todos), source evidence (raw text gated), graph context, delta-since-timestamp, open target, retrieval explanation, feedback, privacy status, plus one memory-write tool (remember decision); two ratified P1 additions (session story, grounded answer) follow ADR-007's tool-addition rule. Resources and prompt templates carried over from the POC concepts. Auth required in every mode, strict origin and host checks, constant-time token compare, rate limits, audit log. Deployment modes local/tunnel/public with hardened defaults. A first-run "connect your agent" flow (Claude Desktop and Claude Code config snippets) treats agent connection as onboarding, not an advanced feature. Connected Planner is an optional, default-off beta experiment under ADR-008: it receives only a reviewed export, returns untrusted cited proposals, and never authorizes execution. P1 addition: `fndr.session_story`, a cited narrative reconstruction of a captured work session (what happened, what changed, why), exportable as a document for demos, interviews, and standups.
 
 ### F6. Knowledge graph (phases 3 to 4)
 Deterministic entity extraction from finalized memory fields (stable UUIDv5 identities, confidence-weighted, no fabricated conflict edges), typed schema carried from the POC (14 node types, 29 edge types), stored in SQLite with real traversal queries. Graph context exposed over MCP. 3D visualization rebuilt against the real schema: instanced rendering, real community detection (actual Louvain), token-driven colors, direct consumption of typed nodes/edges. The 3D graph is a demo and comprehension surface; retrieval usage is gated on eval wins.
@@ -141,7 +162,7 @@ Tauri 2 shell with menu-bar presence, autostart, single-instance. Onboarding: a 
 ### Must-have (P0)
 The feature cannot ship without these; each maps to tickets in `ROADMAP-TICKETS.md`.
 
-- **P0.1 Local-only enforcement.** Given any engine crate, when CI runs, then a dependency and egress lint proves no network calls exist outside the model-download and update allowlist. No captured data ever leaves the device.
+- **P0.1 Local-default enforcement.** Given any engine crate, when CI runs, then a dependency and egress lint proves no FNDR network calls exist outside the model-download and update allowlist. Controlled Planner export is a separate local MCP capability with one-time explicit approval (ADR-004); no captured data has direct FNDR egress.
 - **P0.2 No zero-vector or unindexed writes.** Given a missing embedder, when capture runs, then frames are visibly blocked, never stored degraded (carries POC ADR-012 forward).
 - **P0.3 No raw pixel persistence.** Given any capture path, when a record is stored, then no screenshot bytes or paths are persisted; asserted by test.
 - **P0.4 Safety gate on the write path.** Given a secret pattern, password manager, banking/medical context, or blocklisted source, when storage is attempted, then the record is redacted or skipped per policy, with adversarial tests for each class.
@@ -152,6 +173,7 @@ The feature cannot ship without these; each maps to tickets in `ROADMAP-TICKETS.
 - **P0.9 Permanent deletion.** Given a delete (record, time range, domain, or everything), when it completes, then the data is gone from both stores and all indexes, verified by test.
 - **P0.10 Installable.** Given a clean macOS 14+ machine, when a user installs from a URL, then onboarding reaches first captured memory with real embeddings in under 15 minutes including model download, and the app auto-updates thereafter.
 - **P0.11 Pipeline legibility.** Given any stage of capture, synthesis, indexing, or review, when it skips, defers, or fails, then the health panel shows the stage, reason, and count; a user can answer "why was this moment not captured" from the UI (capture-explain); and `fndr doctor` produces an exportable diagnostic report for someone else's machine.
+- **P0.12 Controlled Planner safety.** Given disabled mode, a changed or expired export approval, sensitive context, or an unapproved capability request, when a planner attempts to continue, then FNDR refuses with a typed outcome and a local audit event (ADR-008, ADR-009).
 
 ### Nice-to-have (P1)
 - Reranker stage beating RRF-only on the bench (ship only on a win).
@@ -196,7 +218,10 @@ Measurement method: the bench and resource numbers come from a reproducible `mak
 
 ## 10. Phased roadmap
 
-Two macro-phases with a hard gate between them. Detailed epics and tickets in `ROADMAP-TICKETS.md`.
+This is the longer product horizon. The three-month semester execution addendum
+above is the binding schedule for the final submission. Detailed epics and
+tickets in `ROADMAP-TICKETS.md` are reconciled to that addendum before new
+feature work begins.
 
 ### Months 1 to 3: the spine
 
