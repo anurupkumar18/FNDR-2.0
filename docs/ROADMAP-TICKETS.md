@@ -30,6 +30,11 @@ comment linking the PR).
 | T-109 walking skeleton | Done 2026-08-20 | PR #4; runner: `cargo run -p fndr-mcp --example skeleton`; findings in journal |
 | T-201 SQLite schema v1 + migrations | Done 2026-08-21 | PR #8; journal 2026-08-21-schema-v1 |
 | T-202 Lance writer with batched flush | Done 2026-08-21 | PR #12; migration 0002; embedding contract seam in fndr-inference |
+| T-203 vector/FTS/scalar indexes | Partial (audited 2026-09-05) | `fndr-store/src/lance_writer.rs`: BTree + FTS indexes ship with table creation on first flush. Missing: the vector index (explicitly deferred to T-204 maintenance in the code's own comment) and the AC's 100k-row query-plan proof. |
+| T-204 compaction and version-prune scheduler | Not started (audited 2026-09-05) | No scheduler code found; `lance_writer.rs` explicitly defers vector-index and version-prune maintenance here. |
+| T-205 index rebuild + crash-recovery test | Partial (audited 2026-09-05) | `LanceWriter::rebuild` in `fndr-store/src/lance_writer.rs` (labelled T-205 in its own doc comment) plus `crates/fndr-store/tests/rebuild.rs` (`rebuild_on_missing_table_is_a_fresh_build`, `crash_window_duplicates_then_rebuild_converges_to_truth`) cover the AC's mechanism and crash-recovery proof. Missing: the `fndr index rebuild` CLI surface named in the AC — only the library function exists today. |
+| T-206 deletion everywhere | Not started (audited 2026-09-05) | SQLite FK cascade exists at the schema level (tested), but no public deletion API spanning SQLite + Lance by record/time/domain/all. |
+| T-207 retention jobs | Not started (audited 2026-09-05) | No retention/expiry code found; depends on T-206. |
 | T-208 Lance spike | Done 2026-08-21, GO | PR #10; `docs/spikes/T-208-lance-findings.md`; ADR-002 amended |
 | T-301 textsignal port | Done 2026-08-21 | PR #5 (15 v1 tests) |
 | E05 head start (bench harness) | Skeleton done | PR #6: corpus format, FTS baseline route, regression gate in CI; full FNDR-Bench remains T-501+ |
