@@ -5,7 +5,8 @@
 //!
 //! ```sh
 //! # From a screenshot file (no permissions needed):
-//! cargo run -p fndr-mcp --example skeleton -- --image path/to/screen.png
+//! cargo run -p fndr-mcp --example skeleton -- --image path/to/screen.png \
+//!   --store /tmp/fndr-alpha.sqlite3
 //!
 //! # From the live screen (grants Screen Recording to your terminal):
 //! cargo run -p fndr-mcp --example skeleton
@@ -25,6 +26,7 @@ fn main() {
 
     let mut image: Option<String> = None;
     let mut query: Option<String> = None;
+    let mut store_path: Option<String> = None;
     let mut app_name: Option<String> = None;
     let mut url: Option<String> = None;
     let mut window_title: Option<String> = None;
@@ -33,6 +35,7 @@ fn main() {
         match arg.as_str() {
             "--image" => image = args.next(),
             "--query" => query = args.next(),
+            "--store" => store_path = args.next(),
             "--app" => app_name = args.next(),
             "--url" => url = args.next(),
             "--title" => window_title = args.next(),
@@ -108,11 +111,18 @@ fn main() {
         }
     };
 
-    let store = SkeletonStore::open_in_memory().expect("store");
+    let store = match store_path {
+        Some(path) => SkeletonStore::open(std::path::Path::new(&path)),
+        None => SkeletonStore::open_in_memory(),
+    }
+    .expect("store");
     store
         .insert_record(frame.captured_at_ms as i64, "screen", &text)
         .expect("insert");
-    println!("stored 1 record");
+    println!(
+        "stored 1 record; total records: {}",
+        store.record_count().expect("count")
+    );
 
     if let Some(q) = query {
         for hit in store.search(&q, 10).expect("search") {

@@ -172,4 +172,33 @@ mod tests {
             .unwrap();
         assert!(store.search("ephemeral", 10).unwrap().is_empty());
     }
+
+    #[test]
+    fn file_backed_store_survives_reopen() {
+        let path = std::env::temp_dir().join(format!(
+            "fndr-skeleton-persistence-{}-{}.sqlite3",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+
+        {
+            let store = SkeletonStore::open(&path).unwrap();
+            store
+                .insert_record(1000, "screen", "persistent alpha demo memory")
+                .unwrap();
+        }
+
+        let reopened = SkeletonStore::open(&path).unwrap();
+        let hits = reopened.search("persistent", 10).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].snippet, "[persistent] alpha demo memory");
+        drop(reopened);
+
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{}", path.display(), suffix));
+        }
+    }
 }
