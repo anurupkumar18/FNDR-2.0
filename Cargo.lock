@@ -2504,6 +2504,7 @@ dependencies = [
  "fndr-capture",
  "fndr-ocr",
  "fndr-privacy",
+ "fndr-retrieval",
  "fndr-store",
  "getrandom 0.3.4",
  "rmcp",

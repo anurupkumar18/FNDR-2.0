@@ -1,6 +1,9 @@
-//! The MCP surface. One tool for the walking skeleton: `fndr.search`.
-//! The same engine function will later serve UI and MCP alike (ARCHITECTURE
-//! section 6); for the skeleton the store call stands in for the engine API.
+//! The MCP surface. `fndr.search` now serves the same durable keyword route
+//! (`fndr-retrieval::KeywordRetriever` over `fndr-store::Store`) as the rest
+//! of the engine, not the walking-skeleton store (T-702). It still falls
+//! short of ADR-007's full `fndr.search` contract (hybrid ranking, time/app
+//! filters, surfacing reasons) and remains the only route until later routes
+//! land behind ADR-006's bench gates.
 
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
@@ -17,7 +20,8 @@ use rmcp::{ErrorData, tool, tool_router};
 use serde::{Deserialize, Serialize};
 
 use fndr_privacy::Blocklist;
-use fndr_store::SkeletonStore;
+use fndr_retrieval::KeywordRetriever;
+use fndr_store::Store;
 
 use crate::auth::{AuthConfig, RateWindow, check_request};
 
@@ -37,7 +41,8 @@ pub struct SearchParams {
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub struct SearchHitOut {
-    pub record_id: i64,
+    pub record_id: String,
+    pub chunk_id: String,
     pub source: String,
     pub captured_at_ms: f64,
     pub snippet: String,
@@ -64,17 +69,17 @@ pub struct PrivacyStatusOutput {
 pub struct FndrMcpServer {
     // Mutex because rusqlite's Connection is Send but not Sync. The real
     // engine gets a proper connection strategy with T-201.
-    store: Arc<Mutex<SkeletonStore>>,
+    store: Arc<Mutex<Store>>,
     blocklist: Blocklist,
 }
 
 #[tool_router(server_handler)]
 impl FndrMcpServer {
-    pub fn new(store: SkeletonStore) -> Self {
+    pub fn new(store: Store) -> Self {
         Self::with_blocklist(store, Blocklist::default())
     }
 
-    pub fn with_blocklist(store: SkeletonStore, blocklist: Blocklist) -> Self {
+    pub fn with_blocklist(store: Store, blocklist: Blocklist) -> Self {
         Self {
             store: Arc::new(Mutex::new(store)),
             blocklist,
@@ -94,7 +99,7 @@ impl FndrMcpServer {
             .store
             .lock()
             .map_err(|_| ErrorData::internal_error("store lock poisoned", None))?;
-        let hits = store
+        let hits = KeywordRetriever::new(&store)
             .search(&query, limit)
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
         Ok(Json(SearchOutput {
@@ -102,6 +107,7 @@ impl FndrMcpServer {
                 .into_iter()
                 .map(|h| SearchHitOut {
                     record_id: h.record_id,
+                    chunk_id: h.chunk_id,
                     source: h.source,
                     captured_at_ms: h.captured_at_ms as f64,
                     snippet: h.snippet,

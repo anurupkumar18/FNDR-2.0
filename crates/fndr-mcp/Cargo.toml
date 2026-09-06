@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 fndr-privacy = { path = "../fndr-privacy" }
+fndr-retrieval = { path = "../fndr-retrieval" }
 fndr-store = { path = "../fndr-store" }
 rmcp = { version = "3.1", features = ["transport-streamable-http-server"] }
 axum = "0.8"

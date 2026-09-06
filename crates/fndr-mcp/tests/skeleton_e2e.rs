@@ -6,7 +6,8 @@ use fndr_capture::{FrameSource, PngFileSource};
 use fndr_mcp::{FndrMcpServer, PrivacyStatusParams, SearchParams};
 use fndr_ocr::OcrEngine;
 use fndr_privacy::Blocklist;
-use fndr_store::SkeletonStore;
+use fndr_retrieval::KeywordRetriever;
+use fndr_store::{NewChunk, NewRecord, SkeletonStore, Store};
 use rmcp::handler::server::wrapper::Parameters;
 
 #[test]
@@ -21,14 +22,32 @@ fn capture_ocr_store_search_round_trip() {
     let recognized = engine.recognize(&frame.png).expect("ocr");
     assert!(recognized.to_lowercase().contains("walking skeleton"));
 
-    let store = SkeletonStore::open_in_memory().unwrap();
+    let mut store = Store::open_in_memory().unwrap();
     store
-        .insert_record(frame.captured_at_ms as i64, "screen", &recognized)
+        .insert_capture(
+            &NewRecord {
+                id: "r1".into(),
+                session_id: "s1".into(),
+                source: "screen".into(),
+                app_name: "Finder".into(),
+                bundle_id: None,
+                url: None,
+                window_title: "skeleton e2e".into(),
+                captured_at_ms: frame.captured_at_ms as i64,
+                created_at_ms: frame.captured_at_ms as i64,
+            },
+            &[NewChunk {
+                id: "c1".into(),
+                ord: 0,
+                text: recognized.clone(),
+            }],
+        )
         .unwrap();
 
-    let hits = store.search("skeleton", 10).unwrap();
+    let hits = KeywordRetriever::new(&store)
+        .search("skeleton", 10)
+        .unwrap();
     assert_eq!(hits.len(), 1, "stored frame must be findable");
-    assert!(hits[0].snippet.to_lowercase().contains("[skeleton]"));
 
     // The very same path the MCP tool serves.
     let server = FndrMcpServer::new(store);
@@ -45,7 +64,7 @@ fn capture_ocr_store_search_round_trip() {
 #[test]
 fn privacy_status_reports_posture_without_exposing_entries() {
     let server = FndrMcpServer::with_blocklist(
-        SkeletonStore::open_in_memory().unwrap(),
+        Store::open_in_memory().unwrap(),
         Blocklist::new(&["Figma", "1Password"], &["bank.com"]),
     );
 

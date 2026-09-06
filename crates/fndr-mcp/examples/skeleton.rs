@@ -18,8 +18,12 @@
 use fndr_capture::{FrameSource, PngFileSource, ScreenCaptureKitSource};
 use fndr_mcp::{FndrMcpServer, generate_token, serve_loopback};
 use fndr_ocr::OcrEngine;
-use fndr_privacy::{Blocklist, SafetyContext, SafetyDecision, evaluate, redact_secret_lines};
-use fndr_store::SkeletonStore;
+use fndr_privacy::{
+    Blocklist, SafetyContext, SafetyDecision, evaluate, redact_secret_lines,
+    sanitize_url_for_storage,
+};
+use fndr_retrieval::KeywordRetriever;
+use fndr_store::{DeleteScope, NewChunk, NewRecord, Store};
 
 fn main() {
     tracing_subscriber::fmt().init();
@@ -127,21 +131,46 @@ fn main() {
         }
     };
 
-    let store = match store_path {
-        Some(path) => SkeletonStore::open(std::path::Path::new(&path)),
-        None => SkeletonStore::open_in_memory(),
+    let mut store = match store_path {
+        Some(path) => Store::open(std::path::Path::new(&path)),
+        None => Store::open_in_memory(),
     }
     .expect("store");
+    let record_id = format!("skeleton-{}", frame.captured_at_ms);
+    let chunk_id = format!("{record_id}-0");
     store
-        .insert_record(frame.captured_at_ms as i64, "screen", &text)
+        .insert_capture(
+            &NewRecord {
+                id: record_id.clone(),
+                session_id: "skeleton-session".into(),
+                source: "screen".into(),
+                app_name: app_name.clone().unwrap_or_default(),
+                bundle_id: None,
+                url: url.as_deref().and_then(sanitize_url_for_storage),
+                window_title: window_title.clone().unwrap_or_default(),
+                captured_at_ms: frame.captured_at_ms as i64,
+                created_at_ms: frame.captured_at_ms as i64,
+            },
+            &[NewChunk {
+                id: chunk_id,
+                ord: 0,
+                text,
+            }],
+        )
         .expect("insert");
     println!(
         "stored 1 record; total records: {}",
-        store.record_count().expect("count")
+        store
+            .record_ids_for_delete(&DeleteScope::All)
+            .expect("count")
+            .len()
     );
 
     if let Some(q) = query {
-        for hit in store.search(&q, 10).expect("search") {
+        for hit in KeywordRetriever::new(&store)
+            .search(&q, 10)
+            .expect("search")
+        {
             println!("hit #{}: {}", hit.record_id, hit.snippet);
         }
         return;
