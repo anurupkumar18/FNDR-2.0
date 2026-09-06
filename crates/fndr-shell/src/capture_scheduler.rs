@@ -368,13 +368,19 @@ mod tests {
             Duration::from_secs(1),
         ));
         let queued = QueuedEmbedder::new(worker, Priority::Backfill, TEST_SPEC.clone());
+        // A nanosecond timestamp alone is not a reliable uniqueness source:
+        // tests in this file run on separate threads within one process, and
+        // two threads can observe the same clock reading, colliding on the
+        // same Lance table directory (`TableAlreadyExists`, T-306 flake).
+        static NEXT_TEST_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let index_dir = std::env::temp_dir().join(format!(
-            "fndr-scheduler-test-{}-{}",
+            "fndr-scheduler-test-{}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            NEXT_TEST_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
         CaptureScheduler::new(
             pipeline,

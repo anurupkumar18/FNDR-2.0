@@ -403,6 +403,20 @@ Rule: when adding a heavy dependency, say so in the PR body, expect the
 first run to bust the budget once, and verify the cached follow-up run
 returns under it.
 
+## 2026-09-06 · Nanosecond timestamps are not a per-thread unique ID
+Cost: an intermittent `make test` failure (`Lance(TableAlreadyExists)`)
+across two unrelated `capture_scheduler` tests, misdiagnosed at first as
+caused by an unrelated same-session change to a different crate.
+Root cause: a test helper built a "unique" Lance directory from
+`process::id()` + `SystemTime::now()` nanos only. `cargo test` runs tests in
+one process on separate threads; two threads can read the same clock value,
+so two tests collided on the same Lance table path.
+Rule: never rely on a raw timestamp alone for per-test-run uniqueness inside
+one process; pair it with a process-wide `AtomicU64` counter (or a crate
+like `tempfile` that guarantees this). A flaky failure that reproduces at a
+different assertion/line on retry, in a file the current diff never touched,
+is a signal to check test isolation before assuming the diff is at fault.
+
 <!-- Inlined from .claude/skills/fndr-feature-dev/SKILL.md -->
 
 
