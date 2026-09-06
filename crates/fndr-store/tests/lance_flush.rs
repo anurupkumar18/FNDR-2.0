@@ -4,9 +4,14 @@
 //! place a non-real embedder may exist.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
-use fndr_inference::{CHUNK_EMBEDDING_V1, EmbedError, Embedder, EmbeddingSpec};
+use fndr_inference::{
+    CHUNK_EMBEDDING_V1, EmbedError, Embedder, EmbeddingSpec, ModelWorkerHandle, Priority,
+    QueuedEmbedder,
+};
 use fndr_store::{LanceWriter, NewChunk, NewRecord, Store};
 
 struct TestEmbedder {
@@ -165,6 +170,29 @@ async fn wrong_dimension_write_is_refused() {
         1,
         "nothing stamped"
     );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// T-403 integration: `LanceWriter::flush_once` needs only `&dyn Embedder`,
+/// so a `QueuedEmbedder` (routing through a real `ModelWorkerHandle`) slots
+/// in with zero changes to `LanceWriter` itself.
+#[tokio::test]
+async fn flush_once_works_through_the_model_worker_queue() {
+    let dir = scratch("via-queue");
+    let mut store = Store::open(&dir.join("fndr.sqlite3")).unwrap();
+    seed_capture(&mut store, "r1", 2);
+
+    let worker = Arc::new(ModelWorkerHandle::spawn(
+        || Ok(Box::new(TestEmbedder::good()) as Box<dyn Embedder>),
+        Duration::from_secs(30),
+    ));
+    let queued = QueuedEmbedder::new(worker, Priority::Backfill, CHUNK_EMBEDDING_V1);
+
+    let writer = LanceWriter::new(&dir.join("index"));
+    let report = writer.flush_once(&mut store, &queued, 42).await.unwrap();
+    assert_eq!(report.written, 2);
+    assert!(store.pending_chunks(10).unwrap().is_empty());
 
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -10,5 +10,5 @@ pub use embedding::{
     query_embedding_text, truncate_and_renormalize,
 };
 pub use gguf_embedder::GgufEmbedder;
-pub use model_worker::{ModelWorkerHandle, Priority};
+pub use model_worker::{ModelWorkerHandle, Priority, QueuedEmbedder};
 pub use registry::{MODELS, ModelArtifact, artifact, bytes_needed};

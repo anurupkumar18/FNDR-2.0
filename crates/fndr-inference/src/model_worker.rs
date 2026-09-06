@@ -16,7 +16,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use crate::embedding::{EmbedError, Embedder};
+use crate::embedding::{EmbedError, Embedder, EmbeddingSpec};
 
 /// Queue priority. Ordered so the derived `Ord` sorts `Interactive`
 /// highest (ARCHITECTURE section 2's stated order).
@@ -144,6 +144,43 @@ impl ModelWorkerHandle {
     }
 }
 
+/// Adapts a `ModelWorkerHandle` back to the `Embedder` trait at a fixed
+/// priority, so any existing consumer that already accepts `&dyn Embedder`
+/// (for example `fndr_store::LanceWriter::flush_once`) gets queue
+/// discipline — priority ordering, one model in memory, idle unload — for
+/// free, with no change to that consumer's own code.
+pub struct QueuedEmbedder {
+    worker: Arc<ModelWorkerHandle>,
+    priority: Priority,
+    spec: EmbeddingSpec,
+}
+
+impl QueuedEmbedder {
+    pub fn new(worker: Arc<ModelWorkerHandle>, priority: Priority, spec: EmbeddingSpec) -> Self {
+        Self {
+            worker,
+            priority,
+            spec,
+        }
+    }
+}
+
+impl Embedder for QueuedEmbedder {
+    fn spec(&self) -> &EmbeddingSpec {
+        &self.spec
+    }
+
+    fn embed_documents(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, EmbedError> {
+        self.worker
+            .submit_embed_documents(self.priority, texts.to_vec())
+    }
+
+    fn embed_query(&self, query: &str) -> Result<Vec<f32>, EmbedError> {
+        self.worker
+            .submit_embed_query(self.priority, query.to_owned())
+    }
+}
+
 impl Drop for ModelWorkerHandle {
     fn drop(&mut self) {
         self.shared.shutdown.store(true, AtomicOrdering::SeqCst);
@@ -204,7 +241,6 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::embedding::EmbeddingSpec;
     use std::sync::atomic::AtomicUsize;
 
     const TEST_SPEC: EmbeddingSpec = EmbeddingSpec {

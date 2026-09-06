@@ -1,20 +1,22 @@
-//! Proof that the two seams this session built actually compose: a capture
-//! goes through the real safety gate and `Store::insert_capture`
+//! Proof that the three seams this session built actually compose: a
+//! capture goes through the real safety gate and `Store::insert_capture`
 //! (`persist_capture`, T-803 down payment), then the real `LanceWriter`
-//! embeds it with the real GGUF-backed `Embedder` (T-402) and lands a real
-//! vector row in Lance — no mock anywhere on the path.
-//!
-//! This is dev/demo tooling, not a production scheduler: the real call
-//! site for repeated flushes is the model-worker priority queue (T-403),
-//! not this one-shot binary.
+//! embeds it — via the real model-worker queue (T-403), which lazily
+//! loads the real GGUF-backed `Embedder` (T-402) — and lands a real
+//! vector row in Lance. No mock anywhere on the path, and no direct
+//! `GgufEmbedder` call from this binary's own logic (only from inside the
+//! queue's loader closure, which is the sanctioned construction site per
+//! `scripts/check-llm-call-sites.sh`).
 //!
 //! Requires the pinned model downloaded first:
 //! `cargo run -p fndr-downloader --example fetch_model`
 //! Then: `cargo run -p fndr-memory --example end_to_end_flush`
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::Duration;
 
-use fndr_inference::{CHUNK_EMBEDDING_V1, GgufEmbedder};
+use fndr_inference::{CHUNK_EMBEDDING_V1, GgufEmbedder, ModelWorkerHandle, Priority};
 use fndr_memory::{CaptureForPersistence, PersistCaptureOutcome, persist_capture};
 use fndr_privacy::Blocklist;
 use fndr_store::{LanceWriter, Store};
@@ -59,15 +61,30 @@ async fn main() {
         }
     }
 
-    println!("loading the real embedder from {}", model_path.display());
-    let embedder = GgufEmbedder::load(&model_path, CHUNK_EMBEDDING_V1).expect("load embedder");
+    println!(
+        "starting the model-worker queue (real model loads lazily on first job): {}",
+        model_path.display()
+    );
+    let worker_model_path: PathBuf = model_path.clone();
+    let worker = Arc::new(ModelWorkerHandle::spawn(
+        move || {
+            GgufEmbedder::load(&worker_model_path, CHUNK_EMBEDDING_V1)
+                .map(|e| Box::new(e) as Box<dyn fndr_inference::Embedder>)
+        },
+        Duration::from_secs(60),
+    ));
+    let queued =
+        fndr_inference::QueuedEmbedder::new(worker, Priority::Backfill, CHUNK_EMBEDDING_V1);
 
     let writer = LanceWriter::new(&dir.join("index"));
     let report = writer
-        .flush_once(&mut store, &embedder, 1_755_000_001_000)
+        .flush_once(&mut store, &queued, 1_755_000_001_000)
         .await
-        .expect("flush with the real embedder");
-    println!("flushed {} chunk(s) with the real embedder", report.written);
+        .expect("flush through the queue");
+    println!(
+        "flushed {} chunk(s) via the model-worker queue",
+        report.written
+    );
     assert_eq!(report.written, 1, "the one seeded chunk should flush");
     assert!(
         store.pending_chunks(10).unwrap().is_empty(),
@@ -76,7 +93,7 @@ async fn main() {
 
     println!(
         "end-to-end proof complete: real capture -> real safety gate -> real SQLite -> \
-         real Lance vector, via the real GGUF embedder (no mock on the path)"
+         model-worker queue -> real GGUF embedder -> real Lance vector (no mock on the path)"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
