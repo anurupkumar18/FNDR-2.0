@@ -89,17 +89,15 @@ pub struct OcrOutput {
     pub text: String,
     pub confidence: f32,
     pub block_count: usize,
-}
-
-impl OcrOutput {
-    pub fn is_low_signal(&self, min_chars: usize) -> bool {
-        self.text.trim().len() < min_chars || self.confidence < 0.15
-    }
+    /// Calculated by the OCR adapter with its full, engine-owned signal rule.
+    /// Keeping that rule at the Vision boundary avoids a second, drift-prone
+    /// interpretation of OCR quality in the scheduler.
+    pub low_signal: bool,
 }
 
 /// The OCR boundary; implementations must return cleaned, not raw, text.
 pub trait OcrRecognizer {
-    fn recognize(&self, png: &[u8]) -> Result<OcrOutput, PipelineError>;
+    fn recognize(&self, png: &[u8], min_chars: usize) -> Result<OcrOutput, PipelineError>;
 }
 
 /// The result from the final persistence boundary.
@@ -283,11 +281,11 @@ where
             return CaptureTickOutcome::Skipped(SkipReason::PerceptualDuplicate);
         }
 
-        let ocr = match self.ocr.recognize(&frame.png) {
+        let ocr = match self.ocr.recognize(&frame.png, self.config.min_ocr_chars) {
             Ok(ocr) => ocr,
             Err(error) => return failed(SkipReason::OcrFailed, error),
         };
-        if ocr.is_low_signal(self.config.min_ocr_chars) {
+        if ocr.low_signal {
             return CaptureTickOutcome::Skipped(SkipReason::LowSignal);
         }
 
@@ -374,7 +372,7 @@ mod tests {
     struct Ocr(OcrOutput);
 
     impl OcrRecognizer for Ocr {
-        fn recognize(&self, _png: &[u8]) -> Result<OcrOutput, PipelineError> {
+        fn recognize(&self, _png: &[u8], _min_chars: usize) -> Result<OcrOutput, PipelineError> {
             Ok(self.0.clone())
         }
     }
@@ -447,6 +445,7 @@ mod tests {
                 text: "meaningful captured text".to_owned(),
                 confidence: 0.9,
                 block_count: 3,
+                low_signal: false,
             }),
             sink,
             CapturePipelineConfig::default(),
@@ -505,6 +504,31 @@ mod tests {
         assert_eq!(
             pipeline.run_tick(),
             CaptureTickOutcome::Skipped(SkipReason::MissingPerceptualSignature)
+        );
+        assert_eq!(pipeline.sink().captures, 0);
+    }
+
+    #[test]
+    fn ocr_adapter_signal_decision_blocks_storage_without_reimplementing_vision_rules() {
+        let mut pipeline = CapturePipeline::new(
+            Context(context("Finder", "Project", None)),
+            Frames(RefCell::new(
+                vec![frame(Some(signature([0, 0, 0])), 1_000)].into(),
+            )),
+            Gate(GateDecision::Allow),
+            Ocr(OcrOutput {
+                text: "short".to_owned(),
+                confidence: 0.9,
+                block_count: 2,
+                low_signal: true,
+            }),
+            Sink::default(),
+            CapturePipelineConfig::default(),
+        );
+
+        assert_eq!(
+            pipeline.run_tick(),
+            CaptureTickOutcome::Skipped(SkipReason::LowSignal)
         );
         assert_eq!(pipeline.sink().captures, 0);
     }
