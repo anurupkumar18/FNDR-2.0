@@ -3,7 +3,9 @@
 //! the same search call the fndr.search tool serves.
 
 use fndr_capture::{FrameSource, PngFileSource};
-use fndr_mcp::{FndrMcpServer, PrivacyStatusParams, RememberDecisionParams, SearchParams};
+use fndr_mcp::{
+    FndrMcpServer, PrivacyStatusParams, RememberDecisionParams, SearchParams, SourceEvidenceParams,
+};
 use fndr_ocr::OcrEngine;
 use fndr_privacy::Blocklist;
 use fndr_retrieval::KeywordRetriever;
@@ -78,6 +80,76 @@ fn privacy_status_reports_posture_without_exposing_entries() {
     assert_eq!(status.configured_blocked_apps, 2);
     assert_eq!(status.configured_blocked_domains, 1);
     assert!(!status.raw_pixels_persisted);
+}
+
+fn store_with_one_record(text: &str) -> Store {
+    let mut store = Store::open_in_memory().unwrap();
+    store
+        .insert_capture(
+            &NewRecord {
+                id: "r1".into(),
+                session_id: "s1".into(),
+                source: "screen".into(),
+                app_name: "Safari".into(),
+                bundle_id: None,
+                url: None,
+                window_title: "evidence".into(),
+                captured_at_ms: 42,
+                created_at_ms: 42,
+            },
+            &[NewChunk {
+                id: "c1".into(),
+                ord: 0,
+                text: text.into(),
+            }],
+        )
+        .unwrap();
+    store
+}
+
+#[test]
+fn source_evidence_withholds_capture_text_until_include_raw_is_explicit() {
+    let secret = "the quiet part written down";
+    let server = FndrMcpServer::new(store_with_one_record(secret));
+
+    let gated = server
+        .source_evidence(Parameters(SourceEvidenceParams {
+            record_id: "r1".into(),
+            include_raw: None,
+        }))
+        .expect("tool call")
+        .0;
+    assert!(!gated.raw_included);
+    assert_eq!(gated.app_name, "Safari");
+    assert_eq!(gated.chunks.len(), 1);
+    assert_eq!(gated.chunks[0].text_len, secret.len() as u32);
+    assert_eq!(
+        gated.chunks[0].text, None,
+        "capture text must not cross the surface by default"
+    );
+
+    let opened = server
+        .source_evidence(Parameters(SourceEvidenceParams {
+            record_id: "r1".into(),
+            include_raw: Some(true),
+        }))
+        .expect("tool call")
+        .0;
+    assert!(opened.raw_included);
+    assert_eq!(opened.chunks[0].text.as_deref(), Some(secret));
+}
+
+#[test]
+fn source_evidence_for_an_unknown_record_is_a_typed_refusal() {
+    let server = FndrMcpServer::new(Store::open_in_memory().unwrap());
+    let result = server.source_evidence(Parameters(SourceEvidenceParams {
+        record_id: "nope".into(),
+        include_raw: Some(true),
+    }));
+    assert!(
+        result.is_err(),
+        "an unknown record must not return an empty success"
+    );
 }
 
 #[test]

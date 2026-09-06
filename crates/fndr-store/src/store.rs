@@ -94,6 +94,30 @@ pub struct ChunkSearchHit {
     pub snippet: String,
 }
 
+/// One chunk's stored evidence, in capture order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChunkEvidence {
+    pub chunk_id: String,
+    pub ord: i64,
+    pub text: String,
+}
+
+/// Everything SQLite retains behind one capture record: its non-pixel
+/// metadata plus its chunks' stored text. Callers decide whether the text
+/// itself may cross a surface boundary (MCP's `include_raw` gate).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordEvidence {
+    pub record_id: String,
+    pub session_id: String,
+    pub source: String,
+    pub app_name: String,
+    pub bundle_id: Option<String>,
+    pub url: Option<String>,
+    pub window_title: String,
+    pub captured_at_ms: i64,
+    pub chunks: Vec<ChunkEvidence>,
+}
+
 /// A durable-memory selection used by T-206. Domain matching shares the
 /// privacy crate's parsed-host semantics; raw SQL substring matching is never
 /// used for owner deletion requests.
@@ -425,6 +449,62 @@ impl Store {
             .collect::<Result<Vec<_>, _>>()?)
     }
 
+    /// Read one record's retained metadata and its chunks' stored text, in
+    /// capture order. This is the evidence behind a search hit; the caller
+    /// owns the decision to expose the text itself.
+    pub fn record_evidence(&self, record_id: &str) -> Result<Option<RecordEvidence>, StoreError> {
+        let record = self
+            .conn
+            .query_row(
+                "SELECT session_id, source, app_name, bundle_id, url, window_title,
+                        captured_at_ms
+                 FROM memory_records WHERE id = ?1",
+                [record_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, i64>(6)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let Some((session_id, source, app_name, bundle_id, url, window_title, captured_at_ms)) =
+            record
+        else {
+            return Ok(None);
+        };
+
+        let mut statement = self
+            .conn
+            .prepare("SELECT id, ord, text FROM chunks WHERE record_id = ?1 ORDER BY ord")?;
+        let chunks = statement
+            .query_map([record_id], |row| {
+                Ok(ChunkEvidence {
+                    chunk_id: row.get(0)?,
+                    ord: row.get(1)?,
+                    text: row.get(2)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(Some(RecordEvidence {
+            record_id: record_id.to_owned(),
+            session_id,
+            source,
+            app_name,
+            bundle_id,
+            url,
+            window_title,
+            captured_at_ms,
+            chunks,
+        }))
+    }
+
     /// Append one entry to the append-only decision ledger (schema v1). This
     /// is the only durable write MCP's `fndr.remember_decision` performs; it
     /// never edits or removes prior entries.
@@ -705,6 +785,52 @@ mod tests {
             ReviewLifecycle::try_from(raw).unwrap(),
             ReviewLifecycle::ReviewedLocal
         );
+    }
+
+    #[test]
+    fn record_evidence_returns_metadata_and_chunks_in_capture_order() {
+        let mut store = Store::open_in_memory().unwrap();
+        store
+            .insert_capture(
+                &NewRecord {
+                    id: "r1".into(),
+                    session_id: "s1".into(),
+                    source: "screen".into(),
+                    app_name: "Safari".into(),
+                    bundle_id: Some("com.apple.Safari".into()),
+                    url: None,
+                    window_title: "release notes".into(),
+                    captured_at_ms: 42,
+                    created_at_ms: 42,
+                },
+                &[
+                    NewChunk {
+                        id: "c2".into(),
+                        ord: 1,
+                        text: "second".into(),
+                    },
+                    NewChunk {
+                        id: "c1".into(),
+                        ord: 0,
+                        text: "first".into(),
+                    },
+                ],
+            )
+            .unwrap();
+
+        let evidence = store.record_evidence("r1").unwrap().expect("record exists");
+        assert_eq!(evidence.app_name, "Safari");
+        assert_eq!(evidence.bundle_id.as_deref(), Some("com.apple.Safari"));
+        assert_eq!(evidence.captured_at_ms, 42);
+        let ords: Vec<i64> = evidence.chunks.iter().map(|c| c.ord).collect();
+        assert_eq!(ords, vec![0, 1], "chunks come back in capture order");
+        assert_eq!(evidence.chunks[0].text, "first");
+    }
+
+    #[test]
+    fn record_evidence_for_an_unknown_record_is_none_not_an_error() {
+        let store = Store::open_in_memory().unwrap();
+        assert!(store.record_evidence("missing").unwrap().is_none());
     }
 
     #[test]

@@ -1,10 +1,11 @@
-//! The MCP surface (ADR-007). Three of the 14 founding tools are wired:
+//! The MCP surface (ADR-007). Four of the 14 founding tools are wired:
 //! `fndr.search` (over `fndr-retrieval::KeywordRetriever`, not ADR-007's full
-//! hybrid/filtered contract yet), `fndr.privacy_status`, and
-//! `fndr.remember_decision` (the only write tool: appends to
-//! `fndr-store::Store::remember_decision`'s append-only ledger, never edits
-//! or removes). `fndr-store::Store` replaced the walking-skeleton
-//! `SkeletonStore` stand-in as of T-702.
+//! hybrid/filtered contract yet), `fndr.privacy_status`,
+//! `fndr.source_evidence` (capture text behind an explicit `include_raw`
+//! gate that defaults closed), and `fndr.remember_decision` (the only write
+//! tool: appends to `fndr-store::Store::remember_decision`'s append-only
+//! ledger, never edits or removes). `fndr-store::Store` replaced the
+//! walking-skeleton `SkeletonStore` stand-in as of T-702.
 
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
@@ -65,6 +66,42 @@ pub struct PrivacyStatusOutput {
     pub configured_blocked_apps: u32,
     pub configured_blocked_domains: u32,
     pub raw_pixels_persisted: bool,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema, Default)]
+pub struct SourceEvidenceParams {
+    /// A `record_id` from a `fndr.search` hit.
+    pub record_id: String,
+    /// Opt in to the stored capture text itself. Off by default: metadata
+    /// and chunk shape answer "what is this?" without moving the content.
+    pub include_raw: Option<bool>,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct ChunkEvidenceOut {
+    pub chunk_id: String,
+    pub ord: i64,
+    /// Length of the stored text, always present, so a caller can judge a
+    /// record's substance without reading it.
+    pub text_len: u32,
+    /// Present only when `include_raw` was explicitly true.
+    pub text: Option<String>,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct SourceEvidenceOutput {
+    pub record_id: String,
+    pub session_id: String,
+    pub source: String,
+    pub app_name: String,
+    pub bundle_id: Option<String>,
+    pub url: Option<String>,
+    pub window_title: String,
+    pub captured_at_ms: f64,
+    pub chunks: Vec<ChunkEvidenceOut>,
+    /// Echoes whether raw text was included, so a caller never has to infer
+    /// the gate's state from an absent field.
+    pub raw_included: bool,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema, Default)]
@@ -148,6 +185,49 @@ impl FndrMcpServer {
             configured_blocked_apps: self.blocklist.app_count(),
             configured_blocked_domains: self.blocklist.domain_count(),
             raw_pixels_persisted: false,
+        }))
+    }
+
+    #[tool(
+        name = "fndr.source_evidence",
+        description = "The evidence behind one memory: its capture metadata and chunk shape. The stored capture text is returned only when include_raw is explicitly true."
+    )]
+    pub fn source_evidence(
+        &self,
+        Parameters(SourceEvidenceParams {
+            record_id,
+            include_raw,
+        }): Parameters<SourceEvidenceParams>,
+    ) -> Result<Json<SourceEvidenceOutput>, ErrorData> {
+        let include_raw = include_raw.unwrap_or(false);
+        let store = self
+            .store
+            .lock()
+            .map_err(|_| ErrorData::internal_error("store lock poisoned", None))?;
+        let evidence = store
+            .record_evidence(&record_id)
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?
+            .ok_or_else(|| ErrorData::invalid_params("unknown record_id", None))?;
+        Ok(Json(SourceEvidenceOutput {
+            record_id: evidence.record_id,
+            session_id: evidence.session_id,
+            source: evidence.source,
+            app_name: evidence.app_name,
+            bundle_id: evidence.bundle_id,
+            url: evidence.url,
+            window_title: evidence.window_title,
+            captured_at_ms: evidence.captured_at_ms as f64,
+            chunks: evidence
+                .chunks
+                .into_iter()
+                .map(|chunk| ChunkEvidenceOut {
+                    chunk_id: chunk.chunk_id,
+                    ord: chunk.ord,
+                    text_len: chunk.text.len() as u32,
+                    text: include_raw.then_some(chunk.text),
+                })
+                .collect(),
+            raw_included: include_raw,
         }))
     }
 
