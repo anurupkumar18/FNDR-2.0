@@ -41,7 +41,7 @@ and boundaries. The final alpha verification command is `make test`.
 
 | Area | Current owner and entry point | State |
 | --- | --- | --- |
-| Capture seam | `crates/fndr-capture/src/source.rs` | Working one-shot file and CLI sources; ScreenCaptureKit provider is future work. |
+| Capture seam | `crates/fndr-capture/src/source.rs` | Working: the real one-shot ScreenCaptureKit provider (T-302, verified against a live screen through OCR), plus a checked-in-PNG source for tests/demos. Dedup, admission policy, and the staged scheduler that would drive it continuously are still future work (T-303/T-304/T-306), as is the T-310 soak. |
 | Privacy | `crates/fndr-privacy/src/safety_gate.rs` | Working deterministic policy and redaction seam; real pipeline/store integration continues in T-803. |
 | OCR | `crates/fndr-ocr/src/vision.rs` | Working Apple Vision wrapper. |
 | Alpha store | `crates/fndr-store/src/skeleton.rs` | Working local FTS proof; deliberately replaced by the real schema/read path, not extended into a second retrieval stack. |

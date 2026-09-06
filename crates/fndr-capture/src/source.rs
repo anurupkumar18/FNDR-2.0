@@ -91,6 +91,105 @@ impl FrameSource for ScreencaptureCliSource {
     }
 }
 
+/// The real ScreenCaptureKit provider (T-302), replacing the
+/// `screencapture(1)` shellout. Uses one-shot `SCScreenshotManager`
+/// captures rather than a persistent `SCStream`: ADR-001 action item 4
+/// prefers this for FNDR's ~0.5 FPS model, and it sidesteps the upstream
+/// crate's leak/stalled-callback issue history, which is concentrated in
+/// the long-lived stream path.
+///
+/// Each `grab()` is fully self-contained (enumerate content, filter to a
+/// display, capture, encode), so there is no background stream to
+/// supervise, leak, or stall. That costs some per-frame setup, which is
+/// the right trade at half a frame per second.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ScreenCaptureKitSource {
+    /// Which display to capture, by index into the shareable-content list.
+    /// 0 (the `Default`) is the primary display. Multi-display selection
+    /// policy belongs to the capture scheduler (T-306), not to this seam.
+    pub display_index: usize,
+}
+
+impl FrameSource for ScreenCaptureKitSource {
+    fn grab(&self) -> Result<Frame, CaptureError> {
+        use screencapturekit::screenshot_manager::{CGImageExt, ImageFormat, SCScreenshotManager};
+        use screencapturekit::shareable_content::SCShareableContent;
+        use screencapturekit::stream::configuration::SCStreamConfiguration;
+        use screencapturekit::stream::content_filter::SCContentFilter;
+
+        // Missing screen-recording permission surfaces here, as a typed
+        // error rather than an empty frame (invariant 4).
+        let content = SCShareableContent::get().map_err(|e| {
+            CaptureError::PermissionOrTool(format!(
+                "ScreenCaptureKit could not list shareable content \
+                 (screen recording permission?): {e}"
+            ))
+        })?;
+        let displays = content.displays();
+        let display = displays.get(self.display_index).ok_or_else(|| {
+            CaptureError::PermissionOrTool(format!(
+                "display index {} not present ({} display(s) available)",
+                self.display_index,
+                displays.len()
+            ))
+        })?;
+
+        let filter = SCContentFilter::create()
+            .with_display(display)
+            .with_excluding_windows(&[])
+            .build();
+        let mut config = SCStreamConfiguration::new();
+        config
+            .set_width(display.width())
+            .set_height(display.height());
+
+        let image = SCScreenshotManager::capture_image(&filter, &config)
+            .map_err(|e| CaptureError::PermissionOrTool(format!("SCScreenshotManager: {e}")))?;
+
+        // The crate encodes to a file, not to memory, so this round-trips
+        // through a temp path exactly as the `screencapture(1)` source did.
+        // `TempPng` removes the file on every exit path, including errors,
+        // so a raw frame never outlives this call (ADR-004: no raw
+        // screenshot persistence).
+        let tmp = TempPng::new();
+        let tmp_str = tmp
+            .path
+            .to_str()
+            .ok_or_else(|| CaptureError::PermissionOrTool("non-UTF-8 temp path".to_owned()))?;
+        image
+            .save(tmp_str, ImageFormat::Png)
+            .map_err(|e| CaptureError::PermissionOrTool(format!("PNG encode: {e}")))?;
+        let png = std::fs::read(&tmp.path)?;
+        if png.is_empty() {
+            return Err(CaptureError::Empty);
+        }
+        Ok(Frame {
+            png,
+            captured_at_ms: now_ms(),
+        })
+    }
+}
+
+/// A temp PNG path that deletes itself on drop, so a captured frame's
+/// bytes never survive a `grab()` call — including on the error paths.
+struct TempPng {
+    path: PathBuf,
+}
+
+impl TempPng {
+    fn new() -> Self {
+        let path =
+            std::env::temp_dir().join(format!("fndr-sck-{}-{}.png", std::process::id(), now_ms()));
+        Self { path }
+    }
+}
+
+impl Drop for TempPng {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

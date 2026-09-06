@@ -6,3 +6,14 @@ license.workspace = true
 
 [dependencies]
 thiserror = "2"
+tracing = "0.1"
+# T-302/T-310: exact pin per ADR-001 action item 4. This crate is a
+# single-maintainer bet whose issue history is leaks and stalled callbacks
+# in the *persistent SCStream* path; we deliberately use only the one-shot
+# SCScreenshotManager surface, which ADR-001 prefers for our 0.5 FPS model.
+# Named fallbacks if it goes bad: objc2-screen-capture-kit, or vendoring.
+# It depends on apple-cf/apple-metal, not objc2, so it does not collide
+# with fndr-ocr's pinned objc2 0.5 line.
+# `macos_14_0` gates the SCScreenshotManager module; macOS 14 is where that
+# API landed, and it is the floor this provider requires.
+screencapturekit = { version = "=9.0.1", features = ["macos_14_0"] }

@@ -15,7 +15,7 @@
 //! cargo run -p fndr-mcp --example skeleton -- --image x.png --query "hello"
 //! ```
 
-use fndr_capture::{FrameSource, PngFileSource, ScreencaptureCliSource};
+use fndr_capture::{FrameSource, PngFileSource, ScreenCaptureKitSource};
 use fndr_mcp::{FndrMcpServer, generate_token, serve_loopback};
 use fndr_ocr::OcrEngine;
 use fndr_privacy::{Blocklist, SafetyContext, SafetyDecision, evaluate, redact_secret_lines};
@@ -64,7 +64,7 @@ fn main() {
 
     let frame = match &image {
         Some(path) => PngFileSource { path: path.into() }.grab(),
-        None => ScreencaptureCliSource.grab(),
+        None => ScreenCaptureKitSource::default().grab(),
     };
     let frame = match frame {
         Ok(frame) => frame,

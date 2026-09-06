@@ -1,0 +1,29 @@
+# Workspace build configuration.
+#
+# T-302 (ScreenCaptureKit provider): the pinned `screencapturekit` crate
+# builds a Swift shim, so anything linking `fndr-capture` needs the Swift
+# runtime on its rpath. Without this, the binary builds fine and then dies
+# at startup with:
+#
+#   dyld: Library not loaded: @rpath/libswift_Concurrency.dylib
+#
+# `/usr/lib/swift` is the system Swift runtime location; the dylibs live in
+# the dyld shared cache rather than on disk, which is why the directory
+# looks empty. Cargo does not propagate a build script's link args to
+# downstream binaries, so this has to live here (workspace-wide) rather
+# than in fndr-capture's build.rs -- otherwise fndr-shell's app binary
+# would still fail at runtime.
+#
+# Scoped to the two Apple desktop targets FNDR actually ships (matching
+# deny.toml's `[graph] targets`). An unused rpath is inert, so this is
+# harmless for crates that never touch ScreenCaptureKit.
+#
+# Platform lane / T-310: revisit if the Swift-shim dependency is dropped
+# (objc2-screen-capture-kit and vendoring are the named fallbacks), and
+# confirm the bundled .app still resolves this after signing/notarization.
+
+[target.aarch64-apple-darwin]
+rustflags = ["-C", "link-arg=-Wl,-rpath,/usr/lib/swift"]
+
+[target.x86_64-apple-darwin]
+rustflags = ["-C", "link-arg=-Wl,-rpath,/usr/lib/swift"]
