@@ -325,3 +325,46 @@ async fn deletion_scopes_cover_record_time_and_all_without_a_derived_table() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Owner deletion must erase the same durable evidence returned by the first
+/// production retrieval route, even when there is no Lance table yet.
+#[tokio::test]
+async fn deletion_everywhere_removes_keyword_search_evidence() {
+    let dir = scratch("delete-keyword-evidence");
+    let mut store = Store::open(&dir.join("fndr.sqlite3")).unwrap();
+    store
+        .insert_capture(
+            &NewRecord {
+                id: "sensitive-record".into(),
+                session_id: "s1".into(),
+                source: "screen".into(),
+                app_name: "Terminal".into(),
+                bundle_id: None,
+                url: None,
+                window_title: "fndr".into(),
+                captured_at_ms: 10,
+                created_at_ms: 10,
+            },
+            &[NewChunk {
+                id: "sensitive-chunk".into(),
+                ord: 0,
+                text: "needle evidence that must disappear".into(),
+            }],
+        )
+        .unwrap();
+    assert_eq!(store.search_chunks("needle", 10).unwrap().len(), 1);
+
+    let writer = LanceWriter::new(&dir.join("index"));
+    let report = delete_everywhere(
+        &mut store,
+        &writer,
+        &DeleteScope::RecordIds(vec!["sensitive-record".into()]),
+        &CHUNK_EMBEDDING_V1,
+    )
+    .await
+    .unwrap();
+    assert_eq!(report.records, 1);
+    assert!(store.search_chunks("needle", 10).unwrap().is_empty());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -46,6 +46,7 @@ and boundaries. The final alpha verification command is `make test`.
 | OCR | `crates/fndr-ocr/src/vision.rs` | Working Apple Vision wrapper. |
 | Alpha store | `crates/fndr-store/src/skeleton.rs` | Working local FTS proof; deliberately replaced by the real schema/read path, not extended into a second retrieval stack. |
 | Real-store write seam | `crates/fndr-memory/src/write_path.rs` | Working: `persist_capture` rechecks `fndr-privacy::evaluate` immediately before writing an already-assembled capture through `Store::insert_capture`, redacting secret-bearing OCR text first and returning a typed `Stored`/`Skipped` outcome. It retains bundle ID plus a structurally sanitized HTTP(S) URL (no credentials, query, or fragment), never pixels. This is a persistence boundary only; it does not replace the capture scheduler's pre-OCR gate or add a retrieval route. |
+| Keyword retrieval | `crates/fndr-retrieval/src/lib.rs` | Working low-RAM first route: `KeywordRetriever` searches a SQLite FTS5 index transactionally maintained beside durable `chunks`, returning stable record/chunk IDs and snippets. Porter stemming covers index/indexes. Vector, Lance-FTS, temporal, hybrid/RRF, ranking, context packs, and MCP/UI wiring remain open. |
 | MCP | `crates/fndr-mcp/src/server.rs` | Working authenticated streamable-HTTP skeleton with search and privacy status. |
 | Planner | ADR-008 and ADR-009 | Contract and evaluation only; no runtime implementation or provider integration. |
 

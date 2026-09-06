@@ -69,6 +69,17 @@ pub struct PendingChunk {
     pub captured_at_ms: i64,
 }
 
+/// A keyword-route hit from SQLite truth. The retrieval crate owns ranking
+/// composition; this storage boundary only exposes indexed chunk evidence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChunkSearchHit {
+    pub chunk_id: String,
+    pub record_id: String,
+    pub source: String,
+    pub captured_at_ms: i64,
+    pub snippet: String,
+}
+
 /// A durable-memory selection used by T-206. Domain matching shares the
 /// privacy crate's parsed-host semantics; raw SQL substring matching is never
 /// used for owner deletion requests.
@@ -185,6 +196,41 @@ impl Store {
         Ok(rows)
     }
 
+    /// Search durable capture chunks through SQLite FTS5. User text becomes a
+    /// conjunction of quoted terms, rather than raw FTS syntax, so punctuation
+    /// cannot change query semantics or surface an SQLite parse error.
+    pub fn search_chunks(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<ChunkSearchHit>, StoreError> {
+        let Some(query) = fts_query(query) else {
+            return Ok(Vec::new());
+        };
+        let mut statement = self.conn.prepare(
+            "SELECT c.id, c.record_id, r.source, r.captured_at_ms,
+                    snippet(chunks_fts, 0, '[', ']', '…', 12)
+             FROM chunks_fts
+             JOIN chunks c ON c.rowid = chunks_fts.rowid
+             JOIN memory_records r ON r.id = c.record_id
+             WHERE chunks_fts MATCH ?1
+             ORDER BY bm25(chunks_fts), r.captured_at_ms DESC, c.ord
+             LIMIT ?2",
+        )?;
+        statement
+            .query_map((query, limit.min(50) as i64), |row| {
+                Ok(ChunkSearchHit {
+                    chunk_id: row.get(0)?,
+                    record_id: row.get(1)?,
+                    source: row.get(2)?,
+                    captured_at_ms: row.get(3)?,
+                    snippet: row.get(4)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(StoreError::from)
+    }
+
     /// Stamp chunks as flushed. Called only after a successful Lance commit;
     /// a failed flush leaves rows pending so the next cycle retries.
     pub fn mark_chunks_flushed(
@@ -296,6 +342,20 @@ impl Store {
             .query_map(params, |row| row.get(0))?
             .collect::<Result<Vec<_>, _>>()?)
     }
+}
+
+fn fts_query(query: &str) -> Option<String> {
+    let terms = query
+        .split_whitespace()
+        .map(|term| {
+            term.chars()
+                .filter(|character| character.is_alphanumeric() || matches!(character, '_' | '-'))
+                .collect::<String>()
+        })
+        .filter(|term| !term.is_empty())
+        .map(|term| format!("\"{term}\""))
+        .collect::<Vec<_>>();
+    (!terms.is_empty()).then(|| terms.join(" AND "))
 }
 
 #[cfg(test)]
@@ -419,6 +479,12 @@ mod tests {
             })
         );
         assert_eq!(store.capture_metadata("missing").unwrap(), None);
+    }
+
+    #[test]
+    fn punctuation_only_fts_query_is_empty() {
+        let store = Store::open_in_memory().unwrap();
+        assert!(store.search_chunks("!!! \"()", 10).unwrap().is_empty());
     }
 
     #[test]
