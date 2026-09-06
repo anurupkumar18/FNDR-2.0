@@ -5,7 +5,7 @@ The canonical tool set and its rationale live in
 P1 additions). This document is the per-tool contract for tools that are
 actually implemented; it grows one entry per tool as each lands, per
 ADR-007's tool-addition rule (use case, schema round-trip test,
-auth-failure test, rate limit, docs entry). Four of the fourteen are
+auth-failure test, rate limit, docs entry). Five of the fourteen are
 implemented today.
 
 Transport, auth, and posture (bearer token, Origin/Host allowlist, rate
@@ -39,6 +39,29 @@ Reports the local privacy posture without exposing blocklist entries.
 
 **Result:** `{ local_default, planner_enabled, configured_blocked_apps, configured_blocked_domains, raw_pixels_persisted }`.
 
+### `fndr.timeline`
+
+Grouped chronological activity over a window: which apps were active, in
+which time buckets, and how many records each produced. Counts only; no
+capture text ever crosses this tool.
+
+**Params:** `{ from_ms: number, to_ms: number, granularity?: "hour" | "day", utc_offset_minutes?: number, limit?: number }`.
+`granularity` defaults to `day`, `utc_offset_minutes` to `0`, `limit` to
+200 (capped at 1000).
+
+**Result:** `{ from_ms, to_ms, granularity, truncated, buckets: [{ bucket_start_ms, app_name, record_count }] }`.
+
+`bucket_start_ms` is an absolute instant already corrected for
+`utc_offset_minutes`, so a caller never re-derives boundaries; UTC-aligned
+days answer "what did I do yesterday" wrongly outside UTC. `truncated` is
+true when `limit` clipped the result, so a partial timeline is never read as
+a complete one. `to_ms` before `from_ms`, or an offset outside
+`-720..=840`, is a typed refusal.
+
+ADR-007's flexible `time_window` shorthand (`"today"`, `"7d"`, from/to
+object) is **not** implemented; this tool takes explicit unix-ms bounds.
+The shared parser lands when a second tool needs it.
+
 ### `fndr.source_evidence`
 
 The evidence behind one memory, resolved from a `record_id` that
@@ -71,7 +94,7 @@ touches ranking.
 
 ## Not yet implemented
 
-`fndr.context_pack`, `fndr.delta`, `fndr.timeline`, `fndr.active_focus`,
+`fndr.context_pack`, `fndr.delta`, `fndr.active_focus`,
 `fndr.project_context`, `fndr.recall`, `fndr.graph_context`,
 `fndr.open_target`, `fndr.explain_retrieval`, `fndr.feedback`, and the
 ratified P1 additions `fndr.answer` and `fndr.session_story`. See ADR-007

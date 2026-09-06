@@ -1,8 +1,8 @@
 //! MCP server: auth middleware, origin and host checks, rate limits, audit log, the canonical tool set (ADR-007).
 //!
-//! Four of the 14 ADR-007 tools are wired: `fndr.search`,
-//! `fndr.privacy_status`, `fndr.source_evidence`, `fndr.remember_decision`.
-//! Auth is real from this
+//! Five of the 14 ADR-007 tools are wired: `fndr.search`,
+//! `fndr.privacy_status`, `fndr.timeline`, `fndr.source_evidence`,
+//! `fndr.remember_decision`. Auth is real from this
 //! first commit (invariant 2): bearer token required, constant-time compare,
 //! Host allowlist, Origin allowlist, a crude global rate limit. The full
 //! surface (all ADR-007 tools, scopes, audit log) is E07.
@@ -12,7 +12,8 @@ mod server;
 
 pub use auth::{AuthConfig, generate_token};
 pub use server::{
-    ChunkEvidenceOut, FndrMcpServer, PrivacyStatusOutput, PrivacyStatusParams,
+    ActivityBucketOut, ChunkEvidenceOut, FndrMcpServer, PrivacyStatusOutput, PrivacyStatusParams,
     RememberDecisionOutput, RememberDecisionParams, SearchHitOut, SearchOutput, SearchParams,
-    SourceEvidenceOutput, SourceEvidenceParams, serve_loopback,
+    SourceEvidenceOutput, SourceEvidenceParams, TimelineGrain, TimelineOutput, TimelineParams,
+    serve_loopback,
 };

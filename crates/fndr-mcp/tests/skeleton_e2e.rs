@@ -5,6 +5,7 @@
 use fndr_capture::{FrameSource, PngFileSource};
 use fndr_mcp::{
     FndrMcpServer, PrivacyStatusParams, RememberDecisionParams, SearchParams, SourceEvidenceParams,
+    TimelineGrain, TimelineParams,
 };
 use fndr_ocr::OcrEngine;
 use fndr_privacy::Blocklist;
@@ -105,6 +106,61 @@ fn store_with_one_record(text: &str) -> Store {
         )
         .unwrap();
     store
+}
+
+#[test]
+fn timeline_reports_activity_counts_and_never_capture_text() {
+    let secret = "a private sentence that must not appear in a timeline";
+    let server = FndrMcpServer::new(store_with_one_record(secret));
+
+    let timeline = server
+        .timeline(Parameters(TimelineParams {
+            from_ms: 0,
+            to_ms: 1_000_000,
+            granularity: Some(TimelineGrain::Hour),
+            utc_offset_minutes: None,
+            limit: None,
+        }))
+        .expect("tool call")
+        .0;
+
+    assert_eq!(timeline.granularity, "hour");
+    assert!(!timeline.truncated);
+    assert_eq!(timeline.buckets.len(), 1);
+    assert_eq!(timeline.buckets[0].app_name, "Safari");
+    assert_eq!(timeline.buckets[0].record_count, 1);
+
+    let rendered = serde_json::to_string(&timeline).expect("serializes");
+    assert!(
+        !rendered.contains("private sentence"),
+        "a timeline must carry counts, never capture text"
+    );
+}
+
+#[test]
+fn timeline_refuses_a_backwards_window_and_an_impossible_offset() {
+    let server = FndrMcpServer::new(store_with_one_record("anything"));
+
+    let backwards = server.timeline(Parameters(TimelineParams {
+        from_ms: 500,
+        to_ms: 100,
+        granularity: None,
+        utc_offset_minutes: None,
+        limit: None,
+    }));
+    assert!(backwards.is_err(), "to_ms before from_ms must be refused");
+
+    let bad_offset = server.timeline(Parameters(TimelineParams {
+        from_ms: 0,
+        to_ms: 500,
+        granularity: None,
+        utc_offset_minutes: Some(5_000),
+        limit: None,
+    }));
+    assert!(
+        bad_offset.is_err(),
+        "an impossible UTC offset must be refused"
+    );
 }
 
 #[test]

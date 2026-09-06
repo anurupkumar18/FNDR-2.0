@@ -1,11 +1,16 @@
-//! The MCP surface (ADR-007). Four of the 14 founding tools are wired:
+//! The MCP surface (ADR-007). Five of the 14 founding tools are wired:
 //! `fndr.search` (over `fndr-retrieval::KeywordRetriever`, not ADR-007's full
-//! hybrid/filtered contract yet), `fndr.privacy_status`,
-//! `fndr.source_evidence` (capture text behind an explicit `include_raw`
-//! gate that defaults closed), and `fndr.remember_decision` (the only write
-//! tool: appends to `fndr-store::Store::remember_decision`'s append-only
-//! ledger, never edits or removes). `fndr-store::Store` replaced the
-//! walking-skeleton `SkeletonStore` stand-in as of T-702.
+//! hybrid/filtered contract yet), `fndr.privacy_status`, `fndr.timeline`
+//! (activity counts only, never capture text), `fndr.source_evidence`
+//! (capture text behind an explicit `include_raw` gate that defaults
+//! closed), and `fndr.remember_decision` (the only write tool: appends to
+//! `fndr-store::Store::remember_decision`'s append-only ledger, never edits
+//! or removes). `fndr-store::Store` replaced the walking-skeleton
+//! `SkeletonStore` stand-in as of T-702.
+//!
+//! ADR-007's flexible `time_window` shorthand is not implemented; tools that
+//! take a window take explicit unix-ms bounds until a second caller needs
+//! the shared parser.
 
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
@@ -24,7 +29,7 @@ use serde::{Deserialize, Serialize};
 
 use fndr_privacy::Blocklist;
 use fndr_retrieval::KeywordRetriever;
-use fndr_store::Store;
+use fndr_store::{Store, TimelineGranularity};
 
 use crate::auth::{AuthConfig, RateWindow, check_request};
 
@@ -66,6 +71,47 @@ pub struct PrivacyStatusOutput {
     pub configured_blocked_apps: u32,
     pub configured_blocked_domains: u32,
     pub raw_pixels_persisted: bool,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema, Default, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum TimelineGrain {
+    Hour,
+    #[default]
+    Day,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema, Default)]
+pub struct TimelineParams {
+    /// Start of the window, unix ms, inclusive.
+    pub from_ms: i64,
+    /// End of the window, unix ms, inclusive.
+    pub to_ms: i64,
+    /// Bucket width. Defaults to `day`.
+    pub granularity: Option<TimelineGrain>,
+    /// Minutes east of UTC, so buckets land on the caller's local
+    /// day/hour boundaries. Defaults to 0 (UTC).
+    pub utc_offset_minutes: Option<i64>,
+    /// Maximum buckets returned (default 200, capped at 1000).
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct ActivityBucketOut {
+    pub bucket_start_ms: f64,
+    pub app_name: String,
+    pub record_count: i64,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct TimelineOutput {
+    pub from_ms: f64,
+    pub to_ms: f64,
+    pub granularity: String,
+    pub buckets: Vec<ActivityBucketOut>,
+    /// True when `limit` truncated the result, so a caller never reads a
+    /// clipped timeline as a complete one.
+    pub truncated: bool,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema, Default)]
@@ -185,6 +231,70 @@ impl FndrMcpServer {
             configured_blocked_apps: self.blocklist.app_count(),
             configured_blocked_domains: self.blocklist.domain_count(),
             raw_pixels_persisted: false,
+        }))
+    }
+
+    #[tool(
+        name = "fndr.timeline",
+        description = "Grouped chronological activity: which apps were active, in which time buckets, over a window. Returns counts only, never capture text."
+    )]
+    pub fn timeline(
+        &self,
+        Parameters(TimelineParams {
+            from_ms,
+            to_ms,
+            granularity,
+            utc_offset_minutes,
+            limit,
+        }): Parameters<TimelineParams>,
+    ) -> Result<Json<TimelineOutput>, ErrorData> {
+        if to_ms < from_ms {
+            return Err(ErrorData::invalid_params(
+                "to_ms must not precede from_ms",
+                None,
+            ));
+        }
+        let utc_offset_minutes = utc_offset_minutes.unwrap_or(0);
+        if !(-(12 * 60)..=(14 * 60)).contains(&utc_offset_minutes) {
+            return Err(ErrorData::invalid_params(
+                "utc_offset_minutes must be within -720..=840",
+                None,
+            ));
+        }
+        let grain = granularity.unwrap_or_default();
+        let limit = limit.unwrap_or(200).min(1_000) as usize;
+        let store = self
+            .store
+            .lock()
+            .map_err(|_| ErrorData::internal_error("store lock poisoned", None))?;
+        let buckets = store
+            .activity_buckets(
+                from_ms,
+                to_ms,
+                match grain {
+                    TimelineGrain::Hour => TimelineGranularity::Hour,
+                    TimelineGrain::Day => TimelineGranularity::Day,
+                },
+                utc_offset_minutes,
+                limit,
+            )
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        Ok(Json(TimelineOutput {
+            from_ms: from_ms as f64,
+            to_ms: to_ms as f64,
+            granularity: match grain {
+                TimelineGrain::Hour => "hour".to_owned(),
+                TimelineGrain::Day => "day".to_owned(),
+            },
+            truncated: buckets.len() == limit,
+            buckets: buckets
+                .into_iter()
+                .map(|bucket| ActivityBucketOut {
+                    bucket_start_ms: bucket.bucket_start_ms as f64,
+                    app_name: bucket.app_name,
+                    record_count: bucket.record_count,
+                })
+                .collect(),
         }))
     }
 

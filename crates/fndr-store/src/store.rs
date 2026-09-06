@@ -118,6 +118,32 @@ pub struct RecordEvidence {
     pub chunks: Vec<ChunkEvidence>,
 }
 
+/// Bucket width for grouped chronological activity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TimelineGranularity {
+    Hour,
+    Day,
+}
+
+impl TimelineGranularity {
+    fn width_ms(self) -> i64 {
+        match self {
+            Self::Hour => 60 * 60 * 1_000,
+            Self::Day => 24 * 60 * 60 * 1_000,
+        }
+    }
+}
+
+/// One app's activity inside one time bucket. `bucket_start_ms` is an
+/// absolute instant, already corrected for the caller's UTC offset, so the
+/// caller never re-derives boundaries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActivityBucket {
+    pub bucket_start_ms: i64,
+    pub app_name: String,
+    pub record_count: i64,
+}
+
 /// A durable-memory selection used by T-206. Domain matching shares the
 /// privacy crate's parsed-host semantics; raw SQL substring matching is never
 /// used for owner deletion requests.
@@ -447,6 +473,43 @@ impl Store {
         Ok(statement
             .query_map(params, |row| row.get(0))?
             .collect::<Result<Vec<_>, _>>()?)
+    }
+
+    /// Grouped chronological activity: per app, per time bucket, how many
+    /// records were captured in `[start_ms, end_ms]`. `utc_offset_minutes`
+    /// shifts bucket boundaries onto the caller's local day or hour, because
+    /// UTC-aligned days answer "what did I do yesterday" wrongly for most of
+    /// the world.
+    pub fn activity_buckets(
+        &self,
+        start_ms: i64,
+        end_ms: i64,
+        granularity: TimelineGranularity,
+        utc_offset_minutes: i64,
+        limit: usize,
+    ) -> Result<Vec<ActivityBucket>, StoreError> {
+        let width = granularity.width_ms();
+        let offset = utc_offset_minutes * 60 * 1_000;
+        let mut statement = self.conn.prepare(
+            "SELECT ((captured_at_ms + ?3) / ?4) * ?4 - ?3 AS bucket_start,
+                    app_name,
+                    COUNT(*) AS records
+             FROM memory_records
+             WHERE captured_at_ms >= ?1 AND captured_at_ms <= ?2
+             GROUP BY bucket_start, app_name
+             ORDER BY bucket_start, records DESC, app_name
+             LIMIT ?5",
+        )?;
+        let rows = statement
+            .query_map((start_ms, end_ms, offset, width, limit as i64), |row| {
+                Ok(ActivityBucket {
+                    bucket_start_ms: row.get(0)?,
+                    app_name: row.get(1)?,
+                    record_count: row.get(2)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
     }
 
     /// Read one record's retained metadata and its chunks' stored text, in
@@ -784,6 +847,79 @@ mod tests {
         assert_eq!(
             ReviewLifecycle::try_from(raw).unwrap(),
             ReviewLifecycle::ReviewedLocal
+        );
+    }
+
+    fn insert_record_at(store: &Store, id: &str, app: &str, captured_at_ms: i64) {
+        store
+            .conn()
+            .execute(
+                "INSERT INTO memory_records (id, source, app_name, captured_at_ms, created_at_ms)
+                 VALUES (?1, 'screen', ?2, ?3, ?3)",
+                (id, app, captured_at_ms),
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn activity_buckets_group_by_app_within_each_hour() {
+        let store = Store::open_in_memory().unwrap();
+        let hour = 60 * 60 * 1_000;
+        insert_record_at(&store, "a", "Safari", hour + 1);
+        insert_record_at(&store, "b", "Safari", hour + 2);
+        insert_record_at(&store, "c", "Terminal", hour + 3);
+        insert_record_at(&store, "d", "Safari", 3 * hour);
+
+        let buckets = store
+            .activity_buckets(0, 10 * hour, TimelineGranularity::Hour, 0, 50)
+            .unwrap();
+        assert_eq!(buckets.len(), 3);
+        // Busiest app first inside a bucket, buckets in chronological order.
+        assert_eq!(buckets[0].bucket_start_ms, hour);
+        assert_eq!(buckets[0].app_name, "Safari");
+        assert_eq!(buckets[0].record_count, 2);
+        assert_eq!(buckets[1].app_name, "Terminal");
+        assert_eq!(buckets[2].bucket_start_ms, 3 * hour);
+    }
+
+    #[test]
+    fn activity_buckets_exclude_records_outside_the_window() {
+        let store = Store::open_in_memory().unwrap();
+        let hour = 60 * 60 * 1_000;
+        insert_record_at(&store, "before", "Safari", hour);
+        insert_record_at(&store, "inside", "Safari", 5 * hour);
+        insert_record_at(&store, "after", "Safari", 9 * hour);
+
+        let buckets = store
+            .activity_buckets(4 * hour, 6 * hour, TimelineGranularity::Hour, 0, 50)
+            .unwrap();
+        assert_eq!(buckets.len(), 1);
+        assert_eq!(buckets[0].record_count, 1);
+        assert_eq!(buckets[0].bucket_start_ms, 5 * hour);
+    }
+
+    #[test]
+    fn day_buckets_follow_the_callers_utc_offset() {
+        let store = Store::open_in_memory().unwrap();
+        let hour = 60 * 60 * 1_000;
+        let day = 24 * hour;
+        // 23:30 UTC on day 0 is 18:30 the same local day at UTC-5, but
+        // 08:30 the *next* local day at UTC+9.
+        insert_record_at(&store, "late", "Safari", day - (30 * 60 * 1_000));
+
+        // Local midnight at UTC-5 is 05:00 UTC, so day 0's bucket starts there.
+        let west = store
+            .activity_buckets(0, 5 * day, TimelineGranularity::Day, -300, 50)
+            .unwrap();
+        assert_eq!(west[0].bucket_start_ms, 5 * hour, "local day 0 at UTC-5");
+
+        let east = store
+            .activity_buckets(0, 5 * day, TimelineGranularity::Day, 540, 50)
+            .unwrap();
+        assert_eq!(
+            east[0].bucket_start_ms,
+            day - (9 * hour),
+            "local day 1 at UTC+9"
         );
     }
 
