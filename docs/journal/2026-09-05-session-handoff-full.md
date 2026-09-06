@@ -1,9 +1,9 @@
 ## Handoff: full session, codex/a006-real-store-safety-seam (2026-09-05)
 
-Twelve commits landed and pushed this session, from `abee258` (the pushed
-baseline this session started from) to `fa80956` (HEAD). All verified
-green with `make test` before each commit; nothing unpushed, nothing left
-uncommitted except the pre-existing, untouched
+Fourteen commits landed and pushed this session, from `abee258` (the
+pushed baseline this session started from) to `ab56409` (HEAD). All
+verified green with `make test` before each commit; nothing unpushed,
+nothing left uncommitted except the pre-existing, untouched
 `docs/journal/2026-09-05-claude-code-handoff-prompt.md` (a saved copy of
 the handoff prompt itself, not a journal entry — deliberately left alone
 all session).
@@ -11,8 +11,17 @@ all session).
 The arc: a privacy-safe write seam, then the real embedder that gives it
 something to store, then the queue that makes the embedder safe to share,
 then the wiring proving all of it composes end to end against a real
-model. Items 1–6 below were the first half; 7–9 (this roll-up's original
-end) and 10–12 the second.
+model — and finally the real ScreenCaptureKit provider, which is the
+first time this repo has read text off an actual screen.
+
+**The headline, for anyone reading only this paragraph:** as of `ab56409`
+FNDR-2.0 can capture a real screen (ScreenCaptureKit), OCR it (Vision),
+gate it for privacy, store it in SQLite, embed it with a real local model
+through a priority queue, and land a real vector in Lance. Every one of
+those was verified running against real hardware and a real model, not
+just compiled. What it still cannot do is any of that *continuously*
+(no scheduler), *search* it meaningfully (retrieval is a stub), or
+*show* it (no UI, no shell).
 
 ### Done, in commit order
 
@@ -89,6 +98,17 @@ end) and 10–12 the second.
     multi-sequence llama.cpp batching was investigated and deliberately
     not attempted (see that entry for why).
 
+11. **`55a9acd`** — this roll-up's second version (docs only).
+12. **`ab56409` — T-302 real ScreenCaptureKit provider.**
+    `ScreenCaptureKitSource`, one-shot `SCScreenshotManager` per ADR-001
+    action item 4, `screencapturekit` pinned `=9.0.1`. Verified against a
+    live screen end to end (666KB real PNG → Vision OCR read 199 chars →
+    privacy gate → SQLite). Chose the ADR-named crate after checking both
+    candidates against real published source — `objc2-screen-capture-kit`
+    0.2.2 does not bind the capture methods at all. Needed a new
+    workspace `.cargo/config.toml` rpath for the crate's Swift shim,
+    which invalidated every cached build once.
+
 Per-commit detail, decisions, and landmines are each in their own journal
 entry dated today; this entry is the roll-up index, not a replacement for
 them:
@@ -100,6 +120,7 @@ them:
 - `docs/journal/2026-09-05-model-worker-queue.md`
 - `docs/journal/2026-09-05-queued-embedder-wiring.md`
 - `docs/journal/2026-09-05-embedding-batch-memoization.md`
+- `docs/journal/2026-09-05-screencapturekit-provider.md`
 
 ### In flight / explicitly not done
 
@@ -119,18 +140,29 @@ order a future session would naturally hit it:
    position/KV-cache/pooling mistakes corrupt embeddings *silently*
    rather than failing loudly, so it needs real empirical verification,
    not a confident-looking diff.
-3. **T-306 staged capture pipeline.** Still blocked on T-302
-   (ScreenCaptureKit provider) and T-303 (dedup) — neither exists. This
-   is real hardware/permission work I flagged earlier this session as
-   not safely completable or verifiable headlessly; it wasn't attempted.
-4. **T-802's remaining half** (alert queue with dismissal keys) and
+3. **T-306 staged capture pipeline — now the single biggest blocker.**
+   T-302 (its hardware-dependent dep) landed this session and T-305 was
+   already done, so T-306 is now gated only on **T-303** (perceptual/
+   semantic dedup) and **T-304** (admission policy port, which ADR-005
+   lists as a near-verbatim PORT item). Neither needs hardware. Once
+   those land, T-306's scheduler is what finally makes capture
+   *continuous* rather than one-shot — and it is the natural owner of a
+   long-lived `ModelWorkerHandle` (item 1). This is the shortest
+   remaining path to dogfooding.
+4. **T-310 soak for the capture provider.** ADR-001 wants a multi-day
+   soak with an RSS trend assertion before trusting the pinned
+   `screencapturekit` crate, whose issue history is leaks. One-shot
+   `SCScreenshotManager` is the shape least likely to leak, but that is
+   an argument, not a measurement. Until this runs, T-302 is working but
+   unproven over time.
+5. **T-802's remaining half** (alert queue with dismissal keys) and
    **a real caller** that loads a `SensitiveContextPolicy` from
    `settings` or disk — `fndr-privacy` deliberately does no I/O itself.
-5. **The M2 retrieval stack** (`fndr-retrieval`) is still a one-line
+6. **The M2 retrieval stack** (`fndr-retrieval`) is still a one-line
    stub. Building it requires the eval corpus/FNDR-Bench infrastructure
    ADR-006 gates ranking changes behind, which doesn't exist yet. Not
    attempted, correctly out of scope for a single session.
-6. A **pre-existing, unrelated `cargo-deny` advisories failure** (yanked
+7. A **pre-existing, unrelated `cargo-deny` advisories failure** (yanked
    `chacha20` via `rand v0.10.2`, pulled by `rmcp`/`lance-core`) was
    found and flagged as a spawned background task (`task_2b06824b`), not
    fixed here — it predates this session's changes.
@@ -162,6 +194,17 @@ order a future session would naturally hit it:
   If it should become automatic, that's a deliberate change to
   `scripts/workspace-lints.sh` / the `guards` CI job, with its own review
   — not a drive-by edit, since it would gate every future PR.
+- **`.cargo/config.toml` now exists and is load-bearing.** Without its
+  `-Wl,-rpath,/usr/lib/swift`, anything linking `fndr-capture` compiles
+  fine and then dies at startup on `@rpath/libswift_Concurrency.dylib`.
+  Do not "clean up" that file. It cannot move into a `build.rs` — Cargo
+  does not propagate build-script link args to downstream binaries. Also
+  note it invalidated every cached build once; CI's first run after
+  `ab56409` will be a full cold rebuild.
+- **Capture is one-shot, not continuous.** `ScreenCaptureKitSource::grab()`
+  takes a single frame. Nothing calls it on a timer yet. If someone
+  expects FNDR to be recording in the background right now, it isn't —
+  that's T-306.
 - **`models/` at the repo root now has a real 639MB file in it** (not
   committed, confirmed gitignored and untracked at every commit this
   session). If setting up a fresh clone, run
