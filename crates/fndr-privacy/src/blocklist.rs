@@ -41,7 +41,10 @@ fn normalize_app(entry: &str) -> String {
         .to_lowercase()
 }
 
-pub(crate) fn normalize_domain(entry: &str) -> Option<String> {
+/// Normalize a user-provided domain or URL into the host form used by every
+/// privacy/storage policy. Callers must not implement their own substring
+/// matching for destructive domain operations.
+pub fn normalize_domain(entry: &str) -> Option<String> {
     let trimmed = entry.trim().trim_start_matches('.').to_lowercase();
     // Accept either a bare host ("bank.com") or a pasted URL.
     let host = if trimmed.contains("://") {
@@ -66,6 +69,16 @@ pub(crate) fn host_from_url(url: &str) -> Option<String> {
         .ok()
         .and_then(|url| url.host_str().map(|host| host.to_lowercase()))
         .or_else(|| normalize_domain(url))
+}
+
+/// Whether a retained (already-sanitized) URL belongs to `domain` or one of
+/// its subdomains. This shares the blocklist's label-boundary semantics so a
+/// destructive request for `bank.com` can never match `burbank.com`.
+pub fn url_matches_domain_suffix(url: &str, domain: &str) -> bool {
+    let Some(domain) = normalize_domain(domain) else {
+        return false;
+    };
+    host_from_url(url).is_some_and(|host| host_matches_suffix(&host, &domain))
 }
 
 /// Keep the stable browser location while removing credentials and the query
@@ -214,6 +227,18 @@ mod tests {
             !bl.blocks_url("https://bank.com.evil.example/"),
             "suffix spoof"
         );
+    }
+
+    #[test]
+    fn retained_url_domain_matching_keeps_label_boundaries() {
+        assert!(url_matches_domain_suffix(
+            "https://online.bank.com/account",
+            "bank.com"
+        ));
+        assert!(!url_matches_domain_suffix(
+            "https://burbank.com/",
+            "bank.com"
+        ));
     }
 
     #[test]

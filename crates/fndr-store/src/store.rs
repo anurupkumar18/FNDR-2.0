@@ -18,6 +18,8 @@ pub enum StoreError {
         "database schema v{on_disk} is newer than this build supports (v{supported}); update FNDR instead of downgrading"
     )]
     SchemaTooNew { on_disk: i64, supported: i64 },
+    #[error("invalid deletion scope: {0}")]
+    InvalidDeleteScope(String),
 }
 
 pub struct Store {
@@ -65,6 +67,17 @@ pub struct PendingChunk {
     pub text: String,
     pub source: String,
     pub captured_at_ms: i64,
+}
+
+/// A durable-memory selection used by T-206. Domain matching shares the
+/// privacy crate's parsed-host semantics; raw SQL substring matching is never
+/// used for owner deletion requests.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeleteScope {
+    RecordIds(Vec<String>),
+    TimeRange { start_ms: i64, end_ms: i64 },
+    Domain(String),
+    All,
 }
 
 impl Store {
@@ -195,6 +208,93 @@ impl Store {
         Ok(self
             .conn
             .execute("UPDATE chunks SET flushed_at_ms = 0", [])?)
+    }
+
+    /// Resolve a deletion scope to stable record IDs before touching either
+    /// store. The caller deletes Lance rows first, then passes these IDs to
+    /// `delete_records`; that ordering never leaves raw searchable content in
+    /// the derived index after a successful owner deletion.
+    pub fn record_ids_for_delete(&self, scope: &DeleteScope) -> Result<Vec<String>, StoreError> {
+        match scope {
+            DeleteScope::RecordIds(ids) => {
+                let mut found = Vec::new();
+                for id in ids {
+                    let exists: Option<String> = self
+                        .conn
+                        .query_row("SELECT id FROM memory_records WHERE id = ?1", [id], |row| {
+                            row.get(0)
+                        })
+                        .optional()?;
+                    if let Some(id) = exists {
+                        found.push(id);
+                    }
+                }
+                found.sort();
+                found.dedup();
+                Ok(found)
+            }
+            DeleteScope::TimeRange { start_ms, end_ms } => {
+                if start_ms > end_ms {
+                    return Err(StoreError::InvalidDeleteScope(
+                        "time range start must not be after its end".to_owned(),
+                    ));
+                }
+                self.record_ids_from_query(
+                    "SELECT id FROM memory_records
+                     WHERE captured_at_ms >= ?1 AND captured_at_ms <= ?2
+                     ORDER BY id",
+                    (*start_ms, *end_ms),
+                )
+            }
+            DeleteScope::Domain(domain) => {
+                if fndr_privacy::normalize_domain(domain).is_none() {
+                    return Err(StoreError::InvalidDeleteScope(
+                        "domain must be a valid host or HTTP(S) URL".to_owned(),
+                    ));
+                }
+                let mut statement = self.conn.prepare(
+                    "SELECT id, url FROM memory_records WHERE url IS NOT NULL ORDER BY id",
+                )?;
+                let rows = statement.query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?;
+                rows.filter_map(|row| match row {
+                    Ok((id, url)) if fndr_privacy::url_matches_domain_suffix(&url, domain) => {
+                        Some(Ok(id))
+                    }
+                    Ok(_) => None,
+                    Err(error) => Some(Err(error)),
+                })
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(StoreError::from)
+            }
+            DeleteScope::All => {
+                self.record_ids_from_query("SELECT id FROM memory_records ORDER BY id", [])
+            }
+        }
+    }
+
+    /// Permanently remove resolved records from SQLite truth. Foreign-key
+    /// cascades remove chunks and related durable queues in the same
+    /// transaction; callers must remove matching derived index rows first.
+    pub fn delete_records(&mut self, record_ids: &[String]) -> Result<usize, StoreError> {
+        let tx = self.conn.transaction()?;
+        let mut deleted = 0;
+        for id in record_ids {
+            deleted += tx.execute("DELETE FROM memory_records WHERE id = ?1", [id])?;
+        }
+        tx.commit()?;
+        Ok(deleted)
+    }
+
+    fn record_ids_from_query<P>(&self, query: &str, params: P) -> Result<Vec<String>, StoreError>
+    where
+        P: rusqlite::Params,
+    {
+        let mut statement = self.conn.prepare(query)?;
+        Ok(statement
+            .query_map(params, |row| row.get(0))?
+            .collect::<Result<Vec<_>, _>>()?)
     }
 }
 

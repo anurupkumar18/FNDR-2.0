@@ -199,6 +199,35 @@ impl LanceWriter {
         })
     }
 
+    /// Remove the derived rows for records that an owner is deleting. SQLite
+    /// remains untouched until this succeeds, so a Lance outage cannot leave
+    /// searchable private content behind after a deletion is reported as
+    /// complete. A missing table means no index has ever been built and is a
+    /// successful no-op.
+    pub async fn delete_records(
+        &self,
+        record_ids: &[String],
+        table_name: &str,
+    ) -> Result<usize, FlushError> {
+        if record_ids.is_empty() {
+            return Ok(0);
+        }
+        let db = lancedb::connect(&self.uri).execute().await?;
+        let table = match db.open_table(table_name).execute().await {
+            Ok(table) => table,
+            Err(lancedb::Error::TableNotFound { .. }) => return Ok(0),
+            Err(error) => return Err(error.into()),
+        };
+        let ids = record_ids
+            .iter()
+            .map(|id| format!("'{}'", id.replace('\'', "''")))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let predicate = format!("record_id IN ({ids})");
+        let result = table.delete(&predicate).await?;
+        Ok(result.num_deleted_rows as usize)
+    }
+
     /// `fndr index rebuild` (T-205): drop the derived table and re-flush
     /// everything from SQLite truth. The recovery answer for any Lance
     /// corruption, schema change, or crash-window duplicate: the index is
