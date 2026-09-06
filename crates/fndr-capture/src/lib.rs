@@ -5,8 +5,10 @@
 //! original `screencapture(1)` shellout the walking skeleton used. Adaptive
 //! sampling, dedup, and admission stages arrive with T-303/T-304/T-306.
 
+mod admission;
 mod source;
 
+pub use admission::{CaptureSurfacePolicy, classify_capture_surface_policy};
 pub use source::{
     CaptureError, Frame, FrameSource, PngFileSource, ScreenCaptureKitSource, ScreencaptureCliSource,
 };
