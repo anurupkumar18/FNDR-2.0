@@ -3,7 +3,7 @@
 //! the same search call the fndr.search tool serves.
 
 use fndr_capture::{FrameSource, PngFileSource};
-use fndr_mcp::{FndrMcpServer, PrivacyStatusParams, SearchParams};
+use fndr_mcp::{FndrMcpServer, PrivacyStatusParams, RememberDecisionParams, SearchParams};
 use fndr_ocr::OcrEngine;
 use fndr_privacy::Blocklist;
 use fndr_retrieval::KeywordRetriever;
@@ -78,6 +78,28 @@ fn privacy_status_reports_posture_without_exposing_entries() {
     assert_eq!(status.configured_blocked_apps, 2);
     assert_eq!(status.configured_blocked_domains, 1);
     assert!(!status.raw_pixels_persisted);
+}
+
+#[test]
+fn remember_decision_appends_and_rejects_an_empty_statement() {
+    let server = FndrMcpServer::new(Store::open_in_memory().unwrap());
+
+    let recorded = server
+        .remember_decision(Parameters(RememberDecisionParams {
+            statement: "keep fndr.search on the durable store".into(),
+            record_id: None,
+            decided_at_ms: Some(1_000),
+        }))
+        .expect("tool call")
+        .0;
+    assert_eq!(recorded.decided_at_ms, 1_000);
+
+    let rejected = server.remember_decision(Parameters(RememberDecisionParams {
+        statement: "   ".into(),
+        record_id: None,
+        decided_at_ms: None,
+    }));
+    assert!(rejected.is_err(), "an empty statement must not be recorded");
 }
 
 #[test]

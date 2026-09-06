@@ -424,6 +424,23 @@ impl Store {
             .query_map(params, |row| row.get(0))?
             .collect::<Result<Vec<_>, _>>()?)
     }
+
+    /// Append one entry to the append-only decision ledger (schema v1). This
+    /// is the only durable write MCP's `fndr.remember_decision` performs; it
+    /// never edits or removes prior entries.
+    pub fn remember_decision(
+        &self,
+        decided_at_ms: i64,
+        statement: &str,
+        record_id: Option<&str>,
+    ) -> Result<i64, StoreError> {
+        self.conn.execute(
+            "INSERT INTO decision_ledger (decided_at_ms, statement, record_id)
+             VALUES (?1, ?2, ?3)",
+            (decided_at_ms, statement, record_id),
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
 }
 
 fn fts_query(query: &str) -> Option<String> {
@@ -688,5 +705,39 @@ mod tests {
             ReviewLifecycle::try_from(raw).unwrap(),
             ReviewLifecycle::ReviewedLocal
         );
+    }
+
+    #[test]
+    fn remember_decision_appends_without_requiring_a_record() {
+        let store = Store::open_in_memory().unwrap();
+        let id = store
+            .remember_decision(1_000, "ship the walking skeleton first", None)
+            .unwrap();
+        let (statement, record_id): (String, Option<String>) = store
+            .conn()
+            .query_row(
+                "SELECT statement, record_id FROM decision_ledger WHERE id = ?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(statement, "ship the walking skeleton first");
+        assert_eq!(record_id, None);
+    }
+
+    #[test]
+    fn remember_decision_can_cite_a_record_and_never_overwrites_prior_entries() {
+        let store = Store::open_in_memory().unwrap();
+        insert_record(&store, "r1");
+        let first = store.remember_decision(1_000, "first", Some("r1")).unwrap();
+        let second = store
+            .remember_decision(2_000, "second", Some("r1"))
+            .unwrap();
+        assert_ne!(first, second, "append-only: each call adds a new row");
+        let count: i64 = store
+            .conn()
+            .query_row("SELECT COUNT(*) FROM decision_ledger", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 2);
     }
 }

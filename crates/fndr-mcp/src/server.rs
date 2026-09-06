@@ -1,12 +1,14 @@
-//! The MCP surface. `fndr.search` now serves the same durable keyword route
-//! (`fndr-retrieval::KeywordRetriever` over `fndr-store::Store`) as the rest
-//! of the engine, not the walking-skeleton store (T-702). It still falls
-//! short of ADR-007's full `fndr.search` contract (hybrid ranking, time/app
-//! filters, surfacing reasons) and remains the only route until later routes
-//! land behind ADR-006's bench gates.
+//! The MCP surface (ADR-007). Three of the 14 founding tools are wired:
+//! `fndr.search` (over `fndr-retrieval::KeywordRetriever`, not ADR-007's full
+//! hybrid/filtered contract yet), `fndr.privacy_status`, and
+//! `fndr.remember_decision` (the only write tool: appends to
+//! `fndr-store::Store::remember_decision`'s append-only ledger, never edits
+//! or removes). `fndr-store::Store` replaced the walking-skeleton
+//! `SkeletonStore` stand-in as of T-702.
 
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::Router;
 use axum::body::Body;
@@ -63,6 +65,22 @@ pub struct PrivacyStatusOutput {
     pub configured_blocked_apps: u32,
     pub configured_blocked_domains: u32,
     pub raw_pixels_persisted: bool,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema, Default)]
+pub struct RememberDecisionParams {
+    /// The decision, in the user's or agent's own words.
+    pub statement: String,
+    /// Optional record this decision was made about or in the context of.
+    pub record_id: Option<String>,
+    /// Unix ms the decision was made; defaults to now.
+    pub decided_at_ms: Option<i64>,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct RememberDecisionOutput {
+    pub id: i64,
+    pub decided_at_ms: i64,
 }
 
 #[derive(Clone)]
@@ -132,6 +150,42 @@ impl FndrMcpServer {
             raw_pixels_persisted: false,
         }))
     }
+
+    #[tool(
+        name = "fndr.remember_decision",
+        description = "The only write tool: appends one entry to the local, append-only decision ledger. Never edits or removes prior entries and never mutates ranking."
+    )]
+    pub fn remember_decision(
+        &self,
+        Parameters(RememberDecisionParams {
+            statement,
+            record_id,
+            decided_at_ms,
+        }): Parameters<RememberDecisionParams>,
+    ) -> Result<Json<RememberDecisionOutput>, ErrorData> {
+        if statement.trim().is_empty() {
+            return Err(ErrorData::invalid_params(
+                "statement must not be empty",
+                None,
+            ));
+        }
+        let decided_at_ms = decided_at_ms.unwrap_or_else(now_ms);
+        let store = self
+            .store
+            .lock()
+            .map_err(|_| ErrorData::internal_error("store lock poisoned", None))?;
+        let id = store
+            .remember_decision(decided_at_ms, &statement, record_id.as_deref())
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        Ok(Json(RememberDecisionOutput { id, decided_at_ms }))
+    }
+}
+
+fn now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 struct AuthState {
