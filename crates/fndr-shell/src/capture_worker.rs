@@ -6,15 +6,15 @@ use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use fndr_capture::{InputIdleSource, MacOSInputIdle, SamplingDecision, SamplingPolicy};
 use fndr_store::FlushError;
 
 use crate::capture_scheduler::{
     RealCaptureScheduler, RealSchedulerConfig, SchedulerStartError, SchedulerTickOutcome,
 };
 
-/// The smallest supported interval for the fixed v1 capture loop. The
-/// adaptive input-idle sampler remains T-308; this deliberately avoids a
-/// busy loop on an 8 GB machine until that policy exists.
+/// The smallest supported active-interval floor for the adaptive sampler
+/// (T-308). This deliberately avoids a busy loop on an 8 GB machine.
 pub const MIN_CAPTURE_INTERVAL: Duration = Duration::from_secs(2);
 const STATUS_EVENT_CAPACITY: usize = 64;
 
@@ -22,7 +22,7 @@ const STATUS_EVENT_CAPACITY: usize = 64;
 /// blocklist through `RealSchedulerConfig`; there is no hidden app-data path.
 pub struct RealCaptureWorkerConfig {
     pub scheduler: RealSchedulerConfig,
-    pub capture_interval: Duration,
+    pub sampling: SamplingPolicy,
 }
 
 /// A status event carries outcomes and no image, OCR text, URL, or model data.
@@ -92,7 +92,7 @@ impl CaptureWorkerHandle {
 pub fn start_real_capture_worker(
     config: RealCaptureWorkerConfig,
 ) -> Result<(CaptureWorkerHandle, Receiver<CaptureWorkerEvent>), CaptureWorkerStartError> {
-    start_worker(config.capture_interval, move || {
+    start_worker(config.sampling, MacOSInputIdle, move || {
         RealCaptureScheduler::open(config.scheduler, now_ms())
     })
 }
@@ -112,14 +112,16 @@ impl CaptureLoop for RealCaptureScheduler {
     }
 }
 
-fn start_worker<S>(
-    capture_interval: Duration,
+fn start_worker<S, I>(
+    sampling: SamplingPolicy,
+    idle_source: I,
     open: impl FnOnce() -> Result<S, SchedulerStartError> + Send + 'static,
 ) -> Result<(CaptureWorkerHandle, Receiver<CaptureWorkerEvent>), CaptureWorkerStartError>
 where
     S: CaptureLoop,
+    I: InputIdleSource + Send + 'static,
 {
-    if capture_interval < MIN_CAPTURE_INTERVAL {
+    if sampling.active_interval < MIN_CAPTURE_INTERVAL {
         return Err(CaptureWorkerStartError::InvalidCaptureInterval);
     }
     let (command_tx, command_rx) = mpsc::channel();
@@ -130,7 +132,7 @@ where
         .spawn(move || match open() {
             Ok(scheduler) => {
                 let _ = started_tx.send(Ok(()));
-                run_capture_loop(scheduler, capture_interval, command_rx, event_tx)
+                run_capture_loop(scheduler, sampling, idle_source, command_rx, event_tx)
             }
             Err(error) => {
                 let _ = started_tx.send(Err(error));
@@ -159,36 +161,69 @@ where
     }
 }
 
-fn run_capture_loop<S: CaptureLoop>(
+fn run_capture_loop<S: CaptureLoop, I: InputIdleSource>(
     mut scheduler: S,
-    capture_interval: Duration,
+    sampling: SamplingPolicy,
+    idle_source: I,
     command_rx: Receiver<WorkerCommand>,
     event_tx: SyncSender<CaptureWorkerEvent>,
 ) -> Result<CaptureWorkerReport, CaptureWorkerStopError> {
     let mut ticks = 0;
+    // Zero forces an immediate first decision: `since_capture` is huge, so
+    // the very first iteration captures right away unless input is already
+    // deep-idle, matching the fixed-cadence loop's prior startup behavior.
+    let mut last_capture_ms: u64 = 0;
     loop {
-        let observed_at_ms = now_ms();
-        let outcome = scheduler.tick(observed_at_ms);
-        ticks += 1;
-        // UI/MCP event consumers must never make the capture pipeline wait.
-        // A later health slice can coalesce or persist status; this owner keeps
-        // the newest bounded telemetry best-effort without retaining content.
-        let _ = event_tx.try_send(CaptureWorkerEvent {
-            observed_at_ms,
-            outcome,
-        });
+        let now = now_ms();
+        let since_capture = Duration::from_millis(now.saturating_sub(last_capture_ms));
+        let idle = idle_source.input_idle();
 
-        match command_rx.recv_timeout(capture_interval) {
-            Ok(WorkerCommand::Shutdown) | Err(mpsc::RecvTimeoutError::Disconnected) => {
-                let shutdown_flushed_chunks = scheduler.flush_on_shutdown(now_ms())?;
-                return Ok(CaptureWorkerReport {
-                    ticks,
-                    shutdown_flushed_chunks,
+        match sampling.decide(idle, since_capture) {
+            SamplingDecision::CaptureNow => {
+                let outcome = scheduler.tick(now);
+                ticks += 1;
+                last_capture_ms = now;
+                // UI/MCP event consumers must never make the capture pipeline
+                // wait. A later health slice can coalesce or persist status;
+                // this owner keeps the newest bounded telemetry best-effort
+                // without retaining content.
+                let _ = event_tx.try_send(CaptureWorkerEvent {
+                    observed_at_ms: now,
+                    outcome,
                 });
+
+                match command_rx.try_recv() {
+                    Ok(WorkerCommand::Shutdown) | Err(mpsc::TryRecvError::Disconnected) => {
+                        return finish(&mut scheduler, ticks);
+                    }
+                    Err(mpsc::TryRecvError::Empty) => {}
+                }
             }
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            SamplingDecision::Wait(wait) => match command_rx.recv_timeout(wait) {
+                Ok(WorkerCommand::Shutdown) | Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    return finish(&mut scheduler, ticks);
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+            },
+            SamplingDecision::DeepIdle => match command_rx.recv_timeout(sampling.idle_interval) {
+                Ok(WorkerCommand::Shutdown) | Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    return finish(&mut scheduler, ticks);
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+            },
         }
     }
+}
+
+fn finish<S: CaptureLoop>(
+    scheduler: &mut S,
+    ticks: u64,
+) -> Result<CaptureWorkerReport, CaptureWorkerStopError> {
+    let shutdown_flushed_chunks = scheduler.flush_on_shutdown(now_ms())?;
+    Ok(CaptureWorkerReport {
+        ticks,
+        shutdown_flushed_chunks,
+    })
 }
 
 fn now_ms() -> u64 {
@@ -228,13 +263,32 @@ mod tests {
         }
     }
 
+    #[derive(Clone, Copy)]
+    struct FixedIdle(Duration);
+
+    impl InputIdleSource for FixedIdle {
+        fn input_idle(&self) -> Duration {
+            self.0
+        }
+    }
+
+    fn fast_policy() -> SamplingPolicy {
+        SamplingPolicy {
+            active_interval: MIN_CAPTURE_INTERVAL,
+            idle_interval: Duration::from_millis(20),
+            idle_after: Duration::from_millis(50),
+            deep_idle_after: Duration::from_millis(200),
+            forced_capture_after: Duration::from_secs(120),
+        }
+    }
+
     #[test]
     fn worker_ticks_off_thread_emits_status_and_drains_on_shutdown() {
         let ticks = Arc::new(AtomicUsize::new(0));
         let shutdown_calls = Arc::new(AtomicUsize::new(0));
         let fake_ticks = Arc::clone(&ticks);
         let fake_shutdown_calls = Arc::clone(&shutdown_calls);
-        let (worker, events) = start_worker(MIN_CAPTURE_INTERVAL, move || {
+        let (worker, events) = start_worker(fast_policy(), FixedIdle(Duration::ZERO), move || {
             Ok(FakeScheduler {
                 ticks: fake_ticks,
                 shutdown_calls: fake_shutdown_calls,
@@ -252,13 +306,80 @@ mod tests {
     }
 
     #[test]
-    fn worker_rejects_busy_capture_interval_before_opening_scheduler() {
-        let result = start_worker(Duration::from_millis(1), || -> Result<FakeScheduler, _> {
-            panic!("invalid interval must not initialize the scheduler")
-        });
+    fn worker_rejects_busy_active_interval_before_opening_scheduler() {
+        let mut policy = fast_policy();
+        policy.active_interval = Duration::from_millis(1);
+        let result = start_worker(
+            policy,
+            FixedIdle(Duration::ZERO),
+            || -> Result<FakeScheduler, _> {
+                panic!("invalid policy must not initialize the scheduler")
+            },
+        );
         assert!(matches!(
             result,
             Err(CaptureWorkerStartError::InvalidCaptureInterval)
         ));
+    }
+
+    #[test]
+    fn deep_idle_input_pauses_capture_until_shutdown() {
+        let ticks = Arc::new(AtomicUsize::new(0));
+        let shutdown_calls = Arc::new(AtomicUsize::new(0));
+        let fake_ticks = Arc::clone(&ticks);
+        let fake_shutdown_calls = Arc::clone(&shutdown_calls);
+        // Idle already past `deep_idle_after` on the very first iteration:
+        // the loop must never capture, only wait, and still shut down fast.
+        let (worker, events) = start_worker(
+            fast_policy(),
+            FixedIdle(Duration::from_secs(10)),
+            move || {
+                Ok(FakeScheduler {
+                    ticks: fake_ticks,
+                    shutdown_calls: fake_shutdown_calls,
+                })
+            },
+        )
+        .unwrap();
+
+        assert!(matches!(
+            events.recv_timeout(Duration::from_millis(100)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+        let started = std::time::Instant::now();
+        let report = worker.shutdown().unwrap();
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert_eq!(report.ticks, 0);
+        assert_eq!(ticks.load(Ordering::SeqCst), 0);
+        assert_eq!(shutdown_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn active_input_recaptures_after_the_active_interval_wait() {
+        let ticks = Arc::new(AtomicUsize::new(0));
+        let shutdown_calls = Arc::new(AtomicUsize::new(0));
+        let fake_ticks = Arc::clone(&ticks);
+        let fake_shutdown_calls = Arc::clone(&shutdown_calls);
+        let (worker, events) = start_worker(fast_policy(), FixedIdle(Duration::ZERO), move || {
+            Ok(FakeScheduler {
+                ticks: fake_ticks,
+                shutdown_calls: fake_shutdown_calls,
+            })
+        })
+        .unwrap();
+
+        events.recv_timeout(Duration::from_secs(1)).unwrap();
+        // The next capture should only arrive after ~active_interval, not
+        // immediately (proves the loop actually waits between captures).
+        assert!(matches!(
+            events.recv_timeout(Duration::from_millis(200)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+        events
+            .recv_timeout(Duration::from_secs(5))
+            .expect("second capture eventually arrives at the active cadence");
+        let report = worker.shutdown().unwrap();
+        assert!(report.ticks >= 2);
+        assert_eq!(shutdown_calls.load(Ordering::SeqCst), 1);
     }
 }
