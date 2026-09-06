@@ -9,6 +9,7 @@ mod admission;
 mod dedup;
 mod foreground;
 mod pipeline;
+mod sampling;
 mod source;
 
 pub use admission::{CaptureSurfacePolicy, classify_capture_surface_policy};
@@ -19,6 +20,7 @@ pub use pipeline::{
     CaptureSink, CaptureStage, CaptureTickOutcome, GateDecision, OcrOutput, OcrRecognizer,
     PersistenceOutcome, PipelineError, PreCaptureGate, SkipReason,
 };
+pub use sampling::{SamplingDecision, SamplingPolicy};
 pub use source::{
     CaptureError, Frame, FrameSource, PngFileSource, ScreenCaptureKitSource, ScreencaptureCliSource,
 };
