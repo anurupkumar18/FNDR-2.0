@@ -56,6 +56,10 @@ async fn main() {
             record_id,
             redaction_count,
         } => println!("stored record {record_id} (redactions: {redaction_count})"),
+        PersistCaptureOutcome::Merged {
+            record_id,
+            redaction_count,
+        } => println!("merged into record {record_id} (redactions: {redaction_count})"),
         PersistCaptureOutcome::Skipped { reason } => {
             panic!("unexpected skip for a normal capture: {reason:?}")
         }

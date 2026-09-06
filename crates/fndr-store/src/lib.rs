@@ -20,6 +20,6 @@ pub use lance_writer::{
 };
 pub use skeleton::{SearchHit, SkeletonStore};
 pub use store::{
-    CaptureMetadata, ChunkSearchHit, DeleteScope, NewChunk, NewRecord, PendingChunk, Store,
-    StoreError,
+    CaptureMetadata, ChunkSearchHit, DeleteScope, NewChunk, NewRecord, PendingChunk,
+    PendingContinuityCandidate, Store, StoreError,
 };

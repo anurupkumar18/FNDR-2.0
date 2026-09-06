@@ -10,6 +10,8 @@ use fndr_privacy::{
 };
 use fndr_store::{NewChunk, NewRecord, Store, StoreError};
 
+use crate::{ContinuityRecord, merge_story_text, should_merge};
+
 /// The already-assembled capture fields that may become one SQLite record and
 /// one chunk. IDs are supplied by the pipeline so this seam does not invent an
 /// identity scheme beside the future session/record contracts.
@@ -32,6 +34,10 @@ pub struct CaptureForPersistence<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PersistCaptureOutcome {
     Stored {
+        record_id: String,
+        redaction_count: usize,
+    },
+    Merged {
         record_id: String,
         redaction_count: usize,
     },
@@ -65,18 +71,50 @@ pub fn persist_capture(
             }
         };
 
+    let record = NewRecord {
+        id: capture.record_id.to_owned(),
+        session_id: capture.session_id.to_owned(),
+        source: capture.source.to_owned(),
+        app_name: capture.app_name.to_owned(),
+        bundle_id: capture.bundle_id.map(str::to_owned),
+        url: capture.url.and_then(sanitize_url_for_storage),
+        window_title: capture.window_title.to_owned(),
+        captured_at_ms: capture.captured_at_ms,
+        created_at_ms: capture.created_at_ms,
+    };
+    let incoming = ContinuityRecord {
+        app_name: &record.app_name,
+        url: record.url.as_ref().map(|url| url.as_str()),
+        window_title: &record.window_title,
+        text: &text,
+        snippet: &record.window_title,
+        lexical_shadow: &text,
+        captured_at_ms: record.captured_at_ms,
+    };
+    let recent_after = record.captured_at_ms.saturating_sub(45 * 60 * 1_000);
+    for candidate in store.pending_continuity_candidates(recent_after, 64)? {
+        let candidate_record = ContinuityRecord {
+            app_name: &candidate.app_name,
+            url: candidate.url.as_deref(),
+            window_title: &candidate.window_title,
+            text: &candidate.text,
+            snippet: &candidate.window_title,
+            lexical_shadow: &candidate.text,
+            captured_at_ms: candidate.captured_at_ms,
+        };
+        if should_merge(incoming, candidate_record, 0.0).is_some() {
+            let merged = merge_story_text(&candidate.text, &text, 6_400);
+            if store.merge_pending_capture(&candidate, &record, &merged)? {
+                return Ok(PersistCaptureOutcome::Merged {
+                    record_id: candidate.record_id,
+                    redaction_count,
+                });
+            }
+        }
+    }
+
     store.insert_capture(
-        &NewRecord {
-            id: capture.record_id.to_owned(),
-            session_id: capture.session_id.to_owned(),
-            source: capture.source.to_owned(),
-            app_name: capture.app_name.to_owned(),
-            bundle_id: capture.bundle_id.map(str::to_owned),
-            url: capture.url.and_then(sanitize_url_for_storage),
-            window_title: capture.window_title.to_owned(),
-            captured_at_ms: capture.captured_at_ms,
-            created_at_ms: capture.created_at_ms,
-        },
+        &record,
         &[NewChunk {
             id: capture.chunk_id.to_owned(),
             ord: 0,
@@ -248,5 +286,47 @@ mod tests {
                 url: Some("https://docs.example.com/fndr".into()),
             })
         );
+    }
+
+    #[test]
+    fn same_scheduler_burst_merges_before_lance_can_observe_two_rows() {
+        let mut store = Store::open_in_memory().unwrap();
+        let first = CaptureForPersistence {
+            record_id: "record-1",
+            session_id: "session-1",
+            chunk_id: "chunk-1",
+            source: "screen",
+            app_name: "VS Code",
+            bundle_id: Some("com.microsoft.VSCode"),
+            url: Some("https://docs.example.com/fndr"),
+            window_title: "FNDR continuity design",
+            ocr_text: "Implementing the durable continuity policy and capture merge boundary.",
+            captured_at_ms: 1_000,
+            created_at_ms: 1_000,
+        };
+        let second = CaptureForPersistence {
+            record_id: "record-2",
+            chunk_id: "chunk-2",
+            ocr_text: "Implementing the durable continuity policy and atomic capture merge boundary.",
+            captured_at_ms: 2_000,
+            created_at_ms: 2_000,
+            ..first
+        };
+        assert!(matches!(
+            persist_capture(&mut store, first, &Blocklist::default()).unwrap(),
+            PersistCaptureOutcome::Stored { .. }
+        ));
+        assert_eq!(
+            persist_capture(&mut store, second, &Blocklist::default()).unwrap(),
+            PersistCaptureOutcome::Merged {
+                record_id: "record-1".into(),
+                redaction_count: 0,
+            }
+        );
+        let pending = store.pending_chunks(10).unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].record_id, "record-1");
+        assert!(pending[0].text.contains("atomic capture merge boundary"));
+        assert_eq!(store.search_chunks("atomic", 10).unwrap().len(), 1);
     }
 }

@@ -22,18 +22,19 @@ SQLite, or screen dependency.
 
 ## Explicitly not done
 
-There is no current candidate reader over the real store and no atomic
-persisted merge operation, so the policy is not yet invoked by capture.
-`StoreCaptureSink` continues to receive an explicit session ID from its
-lifecycle owner. This avoids inventing timezone, transaction, or vector-query
-semantics before their real engine boundaries exist.
+The real write seam now uses the policy only against recent **unflushed**
+SQLite candidates and atomically updates the original record/chunk, so FTS and
+the eventual Lance flush observe exactly one row. Indexed records are still
+not candidates: mutating one without a Lance-safe replacement protocol could
+leave a stale vector. `StoreCaptureSink` continues to receive an explicit
+session ID from its lifecycle owner, avoiding invented timezone semantics.
 
 ## Landmines
 
-- Candidate retrieval must remain on the one retrieval stack; do not build a
-  second continuity-only store or raw-SQL search path.
-- A merge is a durable write concern: when wired, it must preserve deletion,
-  FTS/Lance consistency, and all record provenance atomically.
+- Candidate retrieval must remain on the one retrieval stack. The narrow
+  unflushed queue read is a write-path invariant, not a second search surface.
+- Do not extend merges to indexed records until Lance replacement/deletion and
+  SQLite mutation can be verified as one recoverable operation.
 - Similarity is input to this policy, not an excuse to load a model in the
   capture thread. Keep all model work behind `ModelWorkerHandle`.
 

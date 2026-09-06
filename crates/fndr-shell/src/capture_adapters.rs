@@ -152,7 +152,9 @@ impl StoreCaptureSink {
         )
         .map_err(store_error)?
         {
-            PersistCaptureOutcome::Stored { .. } => Ok(PersistenceOutcome::Stored),
+            PersistCaptureOutcome::Stored { .. } | PersistCaptureOutcome::Merged { .. } => {
+                Ok(PersistenceOutcome::Stored)
+            }
             PersistCaptureOutcome::Skipped { .. } => Ok(PersistenceOutcome::SkippedFinalPrivacy),
         }
     }
