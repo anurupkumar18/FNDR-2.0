@@ -6,9 +6,11 @@
 //! sampling, dedup, and admission stages arrive with T-303/T-304/T-306.
 
 mod admission;
+mod dedup;
 mod source;
 
 pub use admission::{CaptureSurfacePolicy, classify_capture_surface_policy};
+pub use dedup::{PerceptualDeduper, PerceptualSignature, SemanticDedupWindow, semantic_signature};
 pub use source::{
     CaptureError, Frame, FrameSource, PngFileSource, ScreenCaptureKitSource, ScreencaptureCliSource,
 };

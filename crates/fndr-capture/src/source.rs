@@ -6,11 +6,15 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// One captured frame, PNG-encoded.
+use crate::PerceptualSignature;
+
+/// One captured frame and, when supplied by the native source, its compact
+/// perceptual signature. The signature is not persisted.
 #[derive(Debug, Clone)]
 pub struct Frame {
     pub png: Vec<u8>,
     pub captured_at_ms: u64,
+    pub perceptual_signature: Option<PerceptualSignature>,
 }
 
 /// Typed capture failures. Never silently skipped: callers surface these
@@ -25,6 +29,9 @@ pub enum CaptureError {
 
     #[error("capture produced no image data")]
     Empty,
+
+    #[error("could not derive the frame's native perceptual signature: {0}")]
+    PerceptualSignature(String),
 }
 
 pub trait FrameSource {
@@ -53,6 +60,7 @@ impl FrameSource for PngFileSource {
         Ok(Frame {
             png,
             captured_at_ms: now_ms(),
+            perceptual_signature: None,
         })
     }
 }
@@ -87,6 +95,7 @@ impl FrameSource for ScreencaptureCliSource {
         Ok(Frame {
             png,
             captured_at_ms: now_ms(),
+            perceptual_signature: None,
         })
     }
 }
@@ -146,6 +155,20 @@ impl FrameSource for ScreenCaptureKitSource {
         let image = SCScreenshotManager::capture_image(&filter, &config)
             .map_err(|e| CaptureError::PermissionOrTool(format!("SCScreenshotManager: {e}")))?;
 
+        // The dHash input comes from ScreenCaptureKit's native raster before
+        // PNG encoding. It samples only a 9 by 8 grid and never decodes a
+        // full-resolution PNG on the capture hot path (T-303).
+        let native_rgba = image
+            .rgba_data()
+            .map_err(|e| CaptureError::PerceptualSignature(e.to_string()))?;
+        let perceptual_signature =
+            PerceptualSignature::from_native_rgba(image.width(), image.height(), &native_rgba)
+                .ok_or_else(|| {
+                    CaptureError::PerceptualSignature(
+                        "invalid ScreenCaptureKit RGBA raster".to_owned(),
+                    )
+                })?;
+
         // The crate encodes to a file, not to memory, so this round-trips
         // through a temp path exactly as the `screencapture(1)` source did.
         // `TempPng` removes the file on every exit path, including errors,
@@ -166,6 +189,7 @@ impl FrameSource for ScreenCaptureKitSource {
         Ok(Frame {
             png,
             captured_at_ms: now_ms(),
+            perceptual_signature: Some(perceptual_signature),
         })
     }
 }
