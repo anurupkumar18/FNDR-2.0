@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 image = { version = "0.23", default-features = false }
 img_hash = "3.2"
+objc2-app-kit = { version = "0.3", features = ["NSRunningApplication", "NSWorkspace"] }
 thiserror = "2"
 tracing = "0.1"
 # T-302/T-310: exact pin per ADR-001 action item 4. This crate is a
