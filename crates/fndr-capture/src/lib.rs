@@ -20,7 +20,7 @@ pub use pipeline::{
     CaptureSink, CaptureStage, CaptureTickOutcome, GateDecision, OcrOutput, OcrRecognizer,
     PersistenceOutcome, PipelineError, PreCaptureGate, SkipReason,
 };
-pub use sampling::{SamplingDecision, SamplingPolicy};
+pub use sampling::{InputIdleSource, MacOSInputIdle, SamplingDecision, SamplingPolicy};
 pub use source::{
     CaptureError, Frame, FrameSource, PngFileSource, ScreenCaptureKitSource, ScreencaptureCliSource,
 };

@@ -3,6 +3,40 @@
 
 use std::time::Duration;
 
+/// Platform boundary for user-input idleness. The policy remains testable from
+/// a supplied duration and does not own a polling thread.
+pub trait InputIdleSource {
+    fn input_idle(&self) -> Duration;
+}
+
+/// macOS's HID input-idle observation. It is a one-shot CoreGraphics query.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct MacOSInputIdle;
+
+impl InputIdleSource for MacOSInputIdle {
+    fn input_idle(&self) -> Duration {
+        platform_input_idle()
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[link(name = "CoreGraphics", kind = "framework")]
+unsafe extern "C" {
+    fn CGEventSourceSecondsSinceLastEventType(source_state_id: i32, event_type: u32) -> f64;
+}
+
+#[cfg(target_os = "macos")]
+fn platform_input_idle() -> Duration {
+    // HIDSystemState and kCGAnyInputEventType; one query, no run loop.
+    let seconds = unsafe { CGEventSourceSecondsSinceLastEventType(1, u32::MAX) };
+    Duration::from_secs_f64(seconds.max(0.0))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn platform_input_idle() -> Duration {
+    Duration::ZERO
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SamplingPolicy {
     pub active_interval: Duration,
@@ -76,6 +110,21 @@ mod tests {
         assert_eq!(
             policy.decide(Duration::from_secs(300), Duration::from_secs(120)),
             SamplingDecision::DeepIdle
+        );
+    }
+
+    struct FixedIdle(Duration);
+    impl InputIdleSource for FixedIdle {
+        fn input_idle(&self) -> Duration {
+            self.0
+        }
+    }
+
+    #[test]
+    fn idle_source_is_an_injectable_platform_boundary() {
+        assert_eq!(
+            FixedIdle(Duration::from_secs(61)).input_idle(),
+            Duration::from_secs(61)
         );
     }
 }
