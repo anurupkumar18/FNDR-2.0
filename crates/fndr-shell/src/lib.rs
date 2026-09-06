@@ -2,6 +2,7 @@
 
 pub mod capture_adapters;
 pub mod capture_scheduler;
+pub mod capture_worker;
 pub mod commands;
 
 use std::error::Error;
