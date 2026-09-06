@@ -105,20 +105,87 @@ impl Embedder for GgufEmbedder {
     }
 
     fn embed_documents(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, EmbedError> {
-        texts
-            .iter()
-            .map(|text| {
-                let native = self.embed_one(text)?;
-                Ok(truncate_and_renormalize(&native, self.spec.dim))
-            })
-            .collect()
+        memoize_by_text(texts, |text| {
+            let native = self.embed_one(text)?;
+            Ok(truncate_and_renormalize(&native, self.spec.dim))
+        })
     }
+}
+
+/// Capture-burst memoization (T-404): a batch of chunk texts from the same
+/// capture tick often repeats boilerplate (nav chrome, headers) verbatim.
+/// Compute each distinct text once and reuse the result for later
+/// duplicates, in whatever order the caller asked for them. `compute` is
+/// generic (rather than inlined into `embed_documents`) purely so this
+/// logic is unit-testable without a real model: see the tests below.
+fn memoize_by_text<F>(texts: &[String], mut compute: F) -> Result<Vec<Vec<f32>>, EmbedError>
+where
+    F: FnMut(&str) -> Result<Vec<f32>, EmbedError>,
+{
+    let mut cache: std::collections::HashMap<&str, Vec<f32>> = std::collections::HashMap::new();
+    let mut results = Vec::with_capacity(texts.len());
+    for text in texts {
+        if let Some(cached) = cache.get(text.as_str()) {
+            results.push(cached.clone());
+            continue;
+        }
+        let value = compute(text)?;
+        cache.insert(text.as_str(), value.clone());
+        results.push(value);
+    }
+    Ok(results)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::CHUNK_EMBEDDING_V1;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn memoize_by_text_computes_each_distinct_text_exactly_once() {
+        let calls = AtomicUsize::new(0);
+        let texts = vec![
+            "alpha".to_owned(),
+            "beta".to_owned(),
+            "alpha".to_owned(),
+            "alpha".to_owned(),
+            "beta".to_owned(),
+        ];
+        let result = memoize_by_text(&texts, |text| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Ok(vec![text.len() as f32])
+        })
+        .unwrap();
+
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "two distinct texts, one call each"
+        );
+        assert_eq!(
+            result,
+            vec![vec![5.0], vec![4.0], vec![5.0], vec![5.0], vec![4.0]],
+            "results preserve the caller's original order, duplicates included"
+        );
+    }
+
+    #[test]
+    fn memoize_by_text_propagates_the_first_error_and_stops() {
+        let calls = AtomicUsize::new(0);
+        let texts = vec!["ok".to_owned(), "boom".to_owned(), "ok".to_owned()];
+        let result = memoize_by_text(&texts, |text| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            if text == "boom" {
+                Err(EmbedError::Failed("boom".to_owned()))
+            } else {
+                Ok(vec![1.0])
+            }
+        });
+
+        assert!(result.is_err());
+        assert_eq!(calls.load(Ordering::SeqCst), 2, "stops at the failing text");
+    }
 
     /// This is the AC's "construction probe (dimension, non-zero)" — but it
     /// needs the real ~640MB GGUF model on disk (`models/`, gitignored,
@@ -158,6 +225,58 @@ mod tests {
         assert_ne!(
             query_vec, docs[0],
             "a real query and a real document should not embed identically"
+        );
+    }
+
+    /// T-404 AC "throughput benchmark recorded": prints observed
+    /// docs/sec against the real model, and separately demonstrates the
+    /// capture-burst memoization win (a batch that is half duplicates
+    /// finishes in roughly half the unique-text time, not the full-batch
+    /// time). This is a recorded number for a human to read, not a
+    /// pass/fail perf gate (real-hardware timing varies too much for
+    /// that) — `make bench`/FNDR-Bench is the eval-gated path for
+    /// anything that would change ranking; this is throughput only.
+    /// `cargo test -p fndr-inference -- --ignored --nocapture` to see it.
+    #[test]
+    #[ignore = "needs the real GGUF model downloaded to models/ (fetch_model example); never runs in CI"]
+    fn throughput_benchmark_and_memoization_win() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../models/Qwen3-Embedding-0.6B-Q8_0.gguf");
+        let embedder =
+            GgufEmbedder::load(&path, CHUNK_EMBEDDING_V1).expect("model should load from disk");
+
+        let unique: Vec<String> = (0..8)
+            .map(|i| format!("distinct captured chunk number {i} about a different topic"))
+            .collect();
+        let start = std::time::Instant::now();
+        embedder.embed_documents(&unique).unwrap();
+        let unique_elapsed = start.elapsed();
+        println!(
+            "throughput: {} unique docs in {:?} ({:.2} docs/sec)",
+            unique.len(),
+            unique_elapsed,
+            unique.len() as f64 / unique_elapsed.as_secs_f64()
+        );
+
+        // Same 8 embeddings' worth of *work*, but half are exact repeats
+        // of the other half (a realistic capture-burst pattern: repeated
+        // nav chrome/headers across chunks in one tick).
+        let mut bursty = unique.clone();
+        bursty.extend(unique.clone());
+        let start = std::time::Instant::now();
+        embedder.embed_documents(&bursty).unwrap();
+        let bursty_elapsed = start.elapsed();
+        println!(
+            "memoization: {} texts (8 unique, 8 duplicate) in {:?}; \
+             unique-only baseline was {:?}",
+            bursty.len(),
+            bursty_elapsed,
+            unique_elapsed
+        );
+        assert!(
+            bursty_elapsed < unique_elapsed * 2,
+            "16 texts with 8 duplicates ({bursty_elapsed:?}) should finish well under \
+             twice the 8-unique baseline ({unique_elapsed:?}) thanks to memoization"
         );
     }
 }
