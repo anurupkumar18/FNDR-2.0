@@ -10,6 +10,7 @@ use crate::StoreError;
 const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0001_schema_v1.sql"),
     include_str!("migrations/0002_chunk_flush.sql"),
+    include_str!("migrations/0003_capture_metadata.sql"),
 ];
 
 pub fn schema_version() -> i64 {

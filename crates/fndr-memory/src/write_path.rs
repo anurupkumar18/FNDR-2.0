@@ -6,6 +6,7 @@
 
 use fndr_privacy::{
     Blocklist, SafetyContext, SafetyDecision, SafetyReason, evaluate, redact_secret_lines,
+    sanitize_url_for_storage,
 };
 use fndr_store::{NewChunk, NewRecord, Store, StoreError};
 
@@ -70,6 +71,8 @@ pub fn persist_capture(
             session_id: capture.session_id.to_owned(),
             source: capture.source.to_owned(),
             app_name: capture.app_name.to_owned(),
+            bundle_id: capture.bundle_id.map(str::to_owned),
+            url: capture.url.and_then(sanitize_url_for_storage),
             window_title: capture.window_title.to_owned(),
             captured_at_ms: capture.captured_at_ms,
             created_at_ms: capture.created_at_ms,
@@ -149,6 +152,13 @@ mod tests {
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].record_id, "record-1");
         assert_eq!(pending[0].text, "alpha notes");
+        assert_eq!(
+            store.capture_metadata("record-1").unwrap(),
+            Some(fndr_store::CaptureMetadata {
+                bundle_id: Some("com.example.app".into()),
+                url: Some("https://docs.example.com/fndr".into()),
+            })
+        );
     }
 
     #[test]
@@ -215,5 +225,28 @@ mod tests {
             }
         );
         assert!(store.pending_chunks(10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn write_path_never_persists_browser_url_query_or_fragment() {
+        let mut store = Store::open_in_memory().unwrap();
+        persist_capture(
+            &mut store,
+            capture(
+                "Safari",
+                Some("https://docs.example.com/fndr?token=secret#private"),
+                "normal note",
+            ),
+            &Blocklist::default(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            store.capture_metadata("record-1").unwrap(),
+            Some(fndr_store::CaptureMetadata {
+                bundle_id: Some("com.example.app".into()),
+                url: Some("https://docs.example.com/fndr".into()),
+            })
+        );
     }
 }

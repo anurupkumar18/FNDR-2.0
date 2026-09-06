@@ -73,6 +73,8 @@ fn seed_capture(store: &mut Store, record_id: &str, n_chunks: usize) {
         session_id: "s1".into(),
         source: "screen".into(),
         app_name: "Terminal".into(),
+        bundle_id: None,
+        url: None,
         window_title: "fndr".into(),
         captured_at_ms: 1_755_000_000_000,
         created_at_ms: 1_755_000_000_000,

@@ -9,6 +9,18 @@
 
 use url::Url;
 
+/// A browser URL that is safe to retain as capture metadata. It can only be
+/// constructed by [`sanitize_url_for_storage`], which removes sensitive URL
+/// components before the value reaches a persistence boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SanitizedUrl(String);
+
+impl SanitizedUrl {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 /// User-configured capture exclusions. Entries are normalized on
 /// construction; matching is total (no allocation-order or config-order
 /// dependence) and case-insensitive.
@@ -54,6 +66,21 @@ pub(crate) fn host_from_url(url: &str) -> Option<String> {
         .ok()
         .and_then(|url| url.host_str().map(|host| host.to_lowercase()))
         .or_else(|| normalize_domain(url))
+}
+
+/// Keep the stable browser location while removing credentials and the query
+/// or fragment values most likely to contain secrets. Invalid and non-web URLs
+/// have no safe capture representation and therefore return `None`.
+pub fn sanitize_url_for_storage(url: &str) -> Option<SanitizedUrl> {
+    let mut parsed = Url::parse(url.trim()).ok()?;
+    if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
+        return None;
+    }
+    parsed.set_username("").ok()?;
+    parsed.set_password(None).ok()?;
+    parsed.set_query(None);
+    parsed.set_fragment(None);
+    Some(SanitizedUrl(parsed.into()))
 }
 
 impl Blocklist {
@@ -206,6 +233,16 @@ mod tests {
         let bl = blocklist(&[], &["bank.com"]);
         assert!(!bl.blocks_url("https://example.com/bank.com/page"));
         assert!(!bl.blocks_url("https://example.com/?next=bank.com"));
+    }
+
+    #[test]
+    fn storage_url_removes_credentials_queries_and_fragments() {
+        assert_eq!(
+            sanitize_url_for_storage("https://alice:secret@example.com/work?token=abc#section"),
+            Some(SanitizedUrl("https://example.com/work".to_owned()))
+        );
+        assert_eq!(sanitize_url_for_storage("file:///private/note"), None);
+        assert_eq!(sanitize_url_for_storage("not a url"), None);
     }
 
     #[test]

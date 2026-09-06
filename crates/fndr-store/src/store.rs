@@ -5,7 +5,8 @@
 
 use std::path::Path;
 
-use rusqlite::Connection;
+use fndr_privacy::SanitizedUrl;
+use rusqlite::{Connection, OptionalExtension};
 
 use crate::migrations;
 
@@ -31,9 +32,20 @@ pub struct NewRecord {
     pub session_id: String,
     pub source: String,
     pub app_name: String,
+    pub bundle_id: Option<String>,
+    /// Sanitized browser URL metadata. The write path removes credentials,
+    /// query strings, and fragments before this crosses into SQLite.
+    pub url: Option<SanitizedUrl>,
     pub window_title: String,
     pub captured_at_ms: i64,
     pub created_at_ms: i64,
+}
+
+/// Capture metadata retained with a record. Pixel bytes never belong here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CaptureMetadata {
+    pub bundle_id: Option<String>,
+    pub url: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -94,14 +106,16 @@ impl Store {
         let tx = self.conn.transaction()?;
         tx.execute(
             "INSERT INTO memory_records
-                 (id, session_id, source, app_name, window_title,
+                 (id, session_id, source, app_name, bundle_id, url, window_title,
                   captured_at_ms, created_at_ms)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             (
                 &record.id,
                 &record.session_id,
                 &record.source,
                 &record.app_name,
+                &record.bundle_id,
+                record.url.as_ref().map(SanitizedUrl::as_str),
                 &record.window_title,
                 record.captured_at_ms,
                 record.created_at_ms,
@@ -115,6 +129,23 @@ impl Store {
         }
         tx.commit()?;
         Ok(())
+    }
+
+    /// Read the non-pixel metadata retained for one capture record.
+    pub fn capture_metadata(&self, record_id: &str) -> Result<Option<CaptureMetadata>, StoreError> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT bundle_id, url FROM memory_records WHERE id = ?1",
+                [record_id],
+                |row| {
+                    Ok(CaptureMetadata {
+                        bundle_id: row.get(0)?,
+                        url: row.get(1)?,
+                    })
+                },
+            )
+            .optional()?)
     }
 
     /// Chunks not yet flushed to Lance, oldest capture first.
@@ -219,6 +250,75 @@ mod tests {
                 .unwrap();
             assert_eq!(count, 1, "missing table {table}");
         }
+    }
+
+    #[test]
+    fn v2_database_upgrades_with_capture_metadata_columns() {
+        let dir = std::env::temp_dir().join(format!("fndr-metadata-v2-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("fndr.sqlite3");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(include_str!("migrations/0001_schema_v1.sql"))
+                .unwrap();
+            conn.execute_batch(include_str!("migrations/0002_chunk_flush.sql"))
+                .unwrap();
+            conn.pragma_update(None, "user_version", 2_i64).unwrap();
+        }
+
+        let store = Store::open(&path).unwrap();
+        assert_eq!(
+            store.schema_version().unwrap(),
+            migrations::schema_version()
+        );
+        let mut statement = store
+            .conn()
+            .prepare("PRAGMA table_info(memory_records)")
+            .unwrap();
+        let columns: Vec<String> = statement
+            .query_map([], |row| row.get(1))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert!(columns.contains(&"bundle_id".to_owned()));
+        assert!(columns.contains(&"url".to_owned()));
+
+        drop(statement);
+        drop(store);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn insert_capture_retains_only_explicit_capture_metadata() {
+        let mut store = Store::open_in_memory().unwrap();
+        store
+            .insert_capture(
+                &NewRecord {
+                    id: "r1".into(),
+                    session_id: "s1".into(),
+                    source: "screen".into(),
+                    app_name: "Safari".into(),
+                    bundle_id: Some("com.apple.Safari".into()),
+                    url: Some(
+                        fndr_privacy::sanitize_url_for_storage("https://docs.example.com/fndr")
+                            .unwrap(),
+                    ),
+                    window_title: "FNDR docs".into(),
+                    captured_at_ms: 1_000,
+                    created_at_ms: 1_000,
+                },
+                &[],
+            )
+            .unwrap();
+
+        assert_eq!(
+            store.capture_metadata("r1").unwrap(),
+            Some(CaptureMetadata {
+                bundle_id: Some("com.apple.Safari".into()),
+                url: Some("https://docs.example.com/fndr".into()),
+            })
+        );
+        assert_eq!(store.capture_metadata("missing").unwrap(), None);
     }
 
     #[test]

@@ -41,11 +41,11 @@ and boundaries. The final alpha verification command is `make test`.
 
 | Area | Current owner and entry point | State |
 | --- | --- | --- |
-| Capture seam | `crates/fndr-capture/src/` | Working: the real one-shot ScreenCaptureKit provider (T-302, verified against a live screen through OCR); T-303's compact native-pixel perceptual signature, A-B-A deduper, and semantic window; and T-304's pure browser admission policy. The staged scheduler that would drive capture continuously is still future work (T-306), as is the T-310 soak. |
+| Capture seam | `crates/fndr-capture/src/` | Working: the real one-shot ScreenCaptureKit provider (T-302, verified against a live screen through OCR); T-303's compact native-pixel perceptual signature, A-B-A deduper, and semantic window; T-304's pure browser admission policy; and T-306's stage-testable pipeline contract plus a fail-closed macOS foreground-metadata provider. Still missing from T-306: the concrete adapters and continuous scheduler, including durable shutdown flush. T-310's soak is also open. |
 | Privacy | `crates/fndr-privacy/src/safety_gate.rs` | Working deterministic policy and redaction seam; real pipeline/store integration continues in T-803. |
 | OCR | `crates/fndr-ocr/src/vision.rs` | Working Apple Vision wrapper. |
 | Alpha store | `crates/fndr-store/src/skeleton.rs` | Working local FTS proof; deliberately replaced by the real schema/read path, not extended into a second retrieval stack. |
-| Real-store write seam | `crates/fndr-memory/src/write_path.rs` | Working: `persist_capture` rechecks `fndr-privacy::evaluate` immediately before writing an already-assembled capture through `Store::insert_capture`, redacting secret-bearing OCR text first and returning a typed `Stored`/`Skipped` outcome. This is a persistence boundary only; it does not replace the capture scheduler's pre-OCR gate or add a retrieval route. |
+| Real-store write seam | `crates/fndr-memory/src/write_path.rs` | Working: `persist_capture` rechecks `fndr-privacy::evaluate` immediately before writing an already-assembled capture through `Store::insert_capture`, redacting secret-bearing OCR text first and returning a typed `Stored`/`Skipped` outcome. It retains bundle ID plus a structurally sanitized HTTP(S) URL (no credentials, query, or fragment), never pixels. This is a persistence boundary only; it does not replace the capture scheduler's pre-OCR gate or add a retrieval route. |
 | MCP | `crates/fndr-mcp/src/server.rs` | Working authenticated streamable-HTTP skeleton with search and privacy status. |
 | Planner | ADR-008 and ADR-009 | Contract and evaluation only; no runtime implementation or provider integration. |
 

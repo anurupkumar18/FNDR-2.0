@@ -2568,6 +2568,7 @@ dependencies = [
  "arrow-array",
  "arrow-schema",
  "fndr-inference",
+ "fndr-privacy",
  "fndr-types",
  "futures",
  "lancedb",

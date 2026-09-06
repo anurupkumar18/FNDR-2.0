@@ -17,4 +17,4 @@ pub use lance_writer::{
     LanceWriter, RebuildReport,
 };
 pub use skeleton::{SearchHit, SkeletonStore};
-pub use store::{NewChunk, NewRecord, PendingChunk, Store, StoreError};
+pub use store::{CaptureMetadata, NewChunk, NewRecord, PendingChunk, Store, StoreError};
