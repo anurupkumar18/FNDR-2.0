@@ -1,5 +1,7 @@
 //! Tauri shell: IPC command registration, event emission, windows, tray, permissions flow. The only crate allowed to import Tauri.
 
+pub mod capture_adapters;
+pub mod capture_scheduler;
 pub mod commands;
 
 use std::error::Error;
