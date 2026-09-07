@@ -10,7 +10,12 @@ on:
 jobs:
   rust:
     name: Rust (fmt, clippy, test)
-    runs-on: macos-14
+    # macos-14 is deprecated by GitHub and its Xcode/SDK predates the Metal
+    # 4 APIs (MTLResidencySet, MTLFX descriptor properties) apple-metal
+    # 0.8.8 (a screencapturekit transitive dependency) now references
+    # unconditionally; macos-26 matches the SDK this repo already develops
+    # against (ADR-001 references macOS 26.1).
+    runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
       - name: Install pinned toolchain
