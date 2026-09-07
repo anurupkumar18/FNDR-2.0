@@ -5,7 +5,7 @@ The canonical tool set and its rationale live in
 P1 additions). This document is the per-tool contract for tools that are
 actually implemented; it grows one entry per tool as each lands, per
 ADR-007's tool-addition rule (use case, schema round-trip test,
-auth-failure test, rate limit, docs entry). Ten of the fourteen are
+auth-failure test, rate limit, docs entry). Eleven of the fourteen are
 implemented today.
 
 Transport, auth, and posture (bearer token, Origin/Host allowlist, rate
@@ -197,6 +197,26 @@ not empty lists. An empty list would be read by an agent as "nothing was
 recorded", which is a silent degradation; a refusal says the kind is not
 implemented. They become real answers when their data models exist.
 
+### `fndr.feedback`
+
+Rate a surfaced result. Recorded locally; never mutates ranking.
+
+**Params:** `{ rating: "helpful" | "unhelpful" | "irrelevant", query: string, record_id?: string, chunk_id?: string, note?: string }`.
+An empty `query` is a typed refusal: feedback without the query it was
+given for cannot be replayed as an eval case, which is the only reason to
+collect it.
+
+**Result:** `{ id, rating, ranking_changed }`. `ranking_changed` is always
+`false` and is stated rather than implied, so a caller is never left
+assuming ratings quietly retrain something. Any future use of this data
+has to arrive through ADR-006's bench gate.
+
+Unlike the audit log, `result_feedback` does store the query text, for the
+replay reason above; the owner also initiates each row explicitly rather
+than it accruing from background capture. Deleting a rated memory nulls
+the citation but keeps the rating, so deletion cannot quietly rewrite eval
+history.
+
 ### `fndr.remember_decision`
 
 The only write tool. Appends one row to `fndr-store::Store`'s append-only
@@ -213,7 +233,7 @@ touches ranking.
 ## Not yet implemented
 
 `fndr.project_context`, `fndr.graph_context`,
-`fndr.explain_retrieval`, `fndr.feedback`, and the
+`fndr.explain_retrieval`, and the
 ratified P1 additions `fndr.answer` and `fndr.session_story`. See ADR-007
 for each tool's purpose and the Connected Planner amendment for
 `fndr.propose_action`.

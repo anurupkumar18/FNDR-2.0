@@ -13,6 +13,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0003_capture_metadata.sql"),
     include_str!("migrations/0004_chunk_fts.sql"),
     include_str!("migrations/0005_mcp_audit.sql"),
+    include_str!("migrations/0006_result_feedback.sql"),
 ];
 
 pub fn schema_version() -> i64 {

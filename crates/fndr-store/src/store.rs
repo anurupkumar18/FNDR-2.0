@@ -160,6 +160,19 @@ pub struct ChangeSummary {
     pub apps: Vec<AppChange>,
 }
 
+/// One owner rating of a surfaced result. Recorded only; nothing reads it
+/// into a ranker (ADR-007: "logged, never silently mutates ranking").
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResultFeedback {
+    pub id: i64,
+    pub at_ms: i64,
+    pub record_id: Option<String>,
+    pub chunk_id: Option<String>,
+    pub query: String,
+    pub rating: String,
+    pub note: String,
+}
+
 /// One recorded MCP tool call. Deliberately carries no query text, record
 /// id, or capture content: an audit log that copies what it audits becomes a
 /// second store of the same sensitive text.
@@ -605,6 +618,50 @@ impl Store {
         }))
     }
 
+    /// Record one rating of a surfaced result. Write-only as far as
+    /// retrieval is concerned: no ranking path reads this table, and any
+    /// future one has to arrive through ADR-006's bench gate.
+    pub fn record_feedback(
+        &self,
+        at_ms: i64,
+        record_id: Option<&str>,
+        chunk_id: Option<&str>,
+        query: &str,
+        rating: &str,
+        note: &str,
+    ) -> Result<i64, StoreError> {
+        self.conn.execute(
+            "INSERT INTO result_feedback (at_ms, record_id, chunk_id, query, rating, note)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            (at_ms, record_id, chunk_id, query, rating, note),
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    /// Read recorded feedback, newest first.
+    pub fn recent_feedback(&self, limit: usize) -> Result<Vec<ResultFeedback>, StoreError> {
+        let mut statement = self.conn.prepare(
+            "SELECT id, at_ms, record_id, chunk_id, query, rating, note
+             FROM result_feedback
+             ORDER BY at_ms DESC, id DESC
+             LIMIT ?1",
+        )?;
+        let rows = statement
+            .query_map([limit as i64], |row| {
+                Ok(ResultFeedback {
+                    id: row.get(0)?,
+                    at_ms: row.get(1)?,
+                    record_id: row.get(2)?,
+                    chunk_id: row.get(3)?,
+                    query: row.get(4)?,
+                    rating: row.get(5)?,
+                    note: row.get(6)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
     /// The id of the most recently captured record, if any. Kept separate
     /// from `record_evidence` so callers compose the two rather than growing
     /// a second "read a record" path.
@@ -802,6 +859,7 @@ mod tests {
             "devices",
             "tokens",
             "mcp_audit",
+            "result_feedback",
         ] {
             let count: i64 = store
                 .conn()
@@ -1128,6 +1186,30 @@ mod tests {
     fn record_evidence_for_an_unknown_record_is_none_not_an_error() {
         let store = Store::open_in_memory().unwrap();
         assert!(store.record_evidence("missing").unwrap().is_none());
+    }
+
+    #[test]
+    fn feedback_survives_deleting_the_record_it_rated() {
+        let mut store = Store::open_in_memory().unwrap();
+        insert_record_at(&store, "r1", "Safari", 1_000);
+        store
+            .record_feedback(2_000, Some("r1"), Some("c1"), "migrations", "helpful", "")
+            .unwrap();
+
+        store.delete_records(&["r1".to_owned()]).unwrap();
+
+        let feedback = store.recent_feedback(10).unwrap();
+        assert_eq!(
+            feedback.len(),
+            1,
+            "deleting a memory must not erase that its surfacing was rated"
+        );
+        assert_eq!(
+            feedback[0].record_id, None,
+            "the citation is dropped, the rating is not"
+        );
+        assert_eq!(feedback[0].query, "migrations");
+        assert_eq!(feedback[0].rating, "helpful");
     }
 
     #[test]

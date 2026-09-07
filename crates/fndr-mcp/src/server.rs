@@ -1,4 +1,4 @@
-//! The MCP surface (ADR-007). Ten of the 14 founding tools are wired:
+//! The MCP surface (ADR-007). Eleven of the 14 founding tools are wired:
 //! `fndr.search` (over `fndr-retrieval::KeywordRetriever`, not ADR-007's full
 //! hybrid/filtered contract yet), `fndr.context_pack` (budgeted, cited
 //! capture text over that same keyword route), `fndr.privacy_status`,
@@ -9,7 +9,8 @@
 //! (capture text behind an explicit `include_raw` gate that defaults
 //! closed), `fndr.open_target` (sanitized URL or app, else an explicit
 //! unavailable state), `fndr.recall` (decisions only; unbacked kinds are refused, not
-//! answered empty), and `fndr.remember_decision` (the only write tool: appends to
+//! answered empty), `fndr.feedback` (recorded, and the response states
+//! that ranking did not change), and `fndr.remember_decision` (the only write tool: appends to
 //! `fndr-store::Store::remember_decision`'s append-only ledger, never edits
 //! or removes). `fndr-store::Store` replaced the walking-skeleton
 //! `SkeletonStore` stand-in as of T-702.
@@ -154,6 +155,49 @@ pub struct SourceEvidenceOutput {
     /// Echoes whether raw text was included, so a caller never has to infer
     /// the gate's state from an absent field.
     pub raw_included: bool,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema, Default, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Rating {
+    #[default]
+    Helpful,
+    Unhelpful,
+    Irrelevant,
+}
+
+impl Rating {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Helpful => "helpful",
+            Self::Unhelpful => "unhelpful",
+            Self::Irrelevant => "irrelevant",
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema, Default)]
+pub struct FeedbackParams {
+    pub rating: Rating,
+    /// The query or goal the rated result was surfaced for. Stored, unlike
+    /// anything in the audit log, because feedback without its query cannot
+    /// be replayed as an eval case.
+    pub query: String,
+    pub record_id: Option<String>,
+    pub chunk_id: Option<String>,
+    /// Optional free-text detail from the owner.
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct FeedbackOutput {
+    pub id: i64,
+    pub rating: String,
+    /// Always false. Feedback is recorded and nothing reads it into a
+    /// ranker; any future use has to arrive through ADR-006's bench gate.
+    /// Stated in the response so a caller is never left assuming ratings
+    /// quietly retrain something.
+    pub ranking_changed: bool,
 }
 
 /// Characters per estimated token. FNDR has no tokenizer on this path and
@@ -593,6 +637,56 @@ impl FndrMcpServer {
                 })
                 .collect(),
             raw_included: include_raw,
+        }))
+    }
+
+    #[tool(
+        name = "fndr.feedback",
+        description = "Rate a surfaced result. The rating is recorded locally and never mutates ranking: the response says so explicitly."
+    )]
+    pub fn feedback(
+        &self,
+        Parameters(params): Parameters<FeedbackParams>,
+    ) -> Result<Json<FeedbackOutput>, ErrorData> {
+        let raw_released = false;
+        let result = self.feedback_inner(Parameters(params));
+        self.audit("fndr.feedback", raw_released, result)
+    }
+
+    fn feedback_inner(
+        &self,
+        Parameters(FeedbackParams {
+            rating,
+            query,
+            record_id,
+            chunk_id,
+            note,
+        }): Parameters<FeedbackParams>,
+    ) -> Result<Json<FeedbackOutput>, ErrorData> {
+        if query.trim().is_empty() {
+            return Err(ErrorData::invalid_params(
+                "query must not be empty: feedback without the query it was given for cannot be replayed",
+                None,
+            ));
+        }
+        let store = self
+            .store
+            .lock()
+            .map_err(|_| ErrorData::internal_error("store lock poisoned", None))?;
+        let id = store
+            .record_feedback(
+                now_ms(),
+                record_id.as_deref(),
+                chunk_id.as_deref(),
+                &query,
+                rating.as_str(),
+                note.as_deref().unwrap_or(""),
+            )
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        Ok(Json(FeedbackOutput {
+            id,
+            rating: rating.as_str().to_owned(),
+            ranking_changed: false,
         }))
     }
 

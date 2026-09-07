@@ -6,9 +6,9 @@ use std::collections::BTreeSet;
 
 use fndr_capture::{FrameSource, PngFileSource};
 use fndr_mcp::{
-    ActiveFocusParams, ContextPackParams, DeltaParams, FndrMcpServer, OpenTargetParams,
-    PrivacyStatusParams, RecallKind, RecallParams, RememberDecisionParams, SearchParams,
-    SourceEvidenceParams, TimelineGrain, TimelineParams,
+    ActiveFocusParams, ContextPackParams, DeltaParams, FeedbackParams, FndrMcpServer,
+    OpenTargetParams, PrivacyStatusParams, Rating, RecallKind, RecallParams,
+    RememberDecisionParams, SearchParams, SourceEvidenceParams, TimelineGrain, TimelineParams,
 };
 use fndr_ocr::OcrEngine;
 use fndr_privacy::Blocklist;
@@ -231,6 +231,42 @@ fn remember_decision_appends_and_rejects_an_empty_statement() {
         decided_at_ms: None,
     }));
     assert!(rejected.is_err(), "an empty statement must not be recorded");
+}
+
+#[test]
+fn feedback_is_recorded_and_says_ranking_did_not_change() {
+    let server = FndrMcpServer::new(store_with_one_record("body"));
+
+    let recorded = server
+        .feedback(Parameters(FeedbackParams {
+            rating: Rating::Unhelpful,
+            query: "migrations".into(),
+            record_id: Some("r1".into()),
+            chunk_id: Some("c1".into()),
+            note: Some("matched the word, missed the meaning".into()),
+        }))
+        .expect("tool call")
+        .0;
+
+    assert_eq!(recorded.rating, "unhelpful");
+    assert!(
+        !recorded.ranking_changed,
+        "a rating must never quietly retrain ranking, and must say so"
+    );
+    assert!(recorded.id > 0);
+}
+
+#[test]
+fn feedback_refuses_a_rating_with_no_query_to_replay() {
+    let server = FndrMcpServer::new(store_with_one_record("body"));
+    let result = server.feedback(Parameters(FeedbackParams {
+        rating: Rating::Helpful,
+        query: "   ".into(),
+        record_id: Some("r1".into()),
+        chunk_id: None,
+        note: None,
+    }));
+    assert!(result.is_err());
 }
 
 #[test]
@@ -537,6 +573,13 @@ fn every_registered_tool_writes_an_audit_entry() {
         goal: "body".into(),
         token_budget: None,
         max_records: None,
+    }));
+    let _ = server.feedback(Parameters(FeedbackParams {
+        rating: Rating::Helpful,
+        query: "body".into(),
+        record_id: Some("r1".into()),
+        chunk_id: None,
+        note: None,
     }));
     let _ = server.source_evidence(Parameters(SourceEvidenceParams {
         record_id: "r1".into(),

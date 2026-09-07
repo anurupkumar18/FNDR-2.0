@@ -22,5 +22,6 @@ pub use skeleton::{SearchHit, SkeletonStore};
 pub use store::{
     ActivityBucket, AppChange, AuditEntry, CaptureMetadata, ChangeSummary, ChunkEvidence,
     ChunkSearchHit, DeleteScope, LedgerDecision, NewChunk, NewRecord, PendingChunk,
-    PendingContinuityCandidate, RecordEvidence, Store, StoreError, TimelineGranularity,
+    PendingContinuityCandidate, RecordEvidence, ResultFeedback, Store, StoreError,
+    TimelineGranularity,
 };
