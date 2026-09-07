@@ -38,6 +38,14 @@ a private `_inner`, and a test asserts the audited tool set equals
 `registered_tool_names()`, so a new tool cannot ship unaudited. That test
 has already caught two additions.
 
+**T-310 got an instrument.** `cargo run -p fndr-shell --example
+capture_soak` is the first thing in the repo to own the real capture
+worker: bounded minutes, per-outcome tick counts, shutdown drain, RSS
+sampled every 15s for the AC's leak trend, non-zero exit when zero ticks
+occurred. It was not run — it captures the operator's screen and this
+session was unattended — so it ships verified as code and explicitly
+unverified as a soak.
+
 **Two new docs of record.** `docs/mcp.md` (per-tool contracts, required by
 ADR-007's tool-addition rule, previously referenced but nonexistent) and an
 ADR-007 amendment recording implementation status and open gaps.
@@ -59,9 +67,10 @@ confident false statement about someone's own memory.
 
 ## Honest current boundaries
 
-- **The capture worker still has no desktop owner.** Nothing calls
-  `start_real_capture_worker`; T-901 is unstarted. The engine is well
-  covered and the product does not capture anything in normal use.
+- **The capture worker still has no desktop owner.** T-901 is unstarted.
+  The soak example calls `start_real_capture_worker`, but it is a CLI a
+  person runs deliberately, not a lifecycle. The product still captures
+  nothing in normal use.
 - **Retrieval is keyword-only.** No vector, hybrid, RRF, or reranking.
   `context_pack` and `search` are honest about this in their responses.
 - **Two tools blocked on data models**, not effort: `project_context` (no
@@ -70,8 +79,9 @@ confident false statement about someone's own memory.
   grows unbounded; T-902's "one-click audit log" now has something real to
   read but nothing renders it.
 - **No per-tool rate limits.** One global window, as before.
-- **T-310's hardware soak and a fresh permission run remain unverified**,
-  unchanged from the previous handoff.
+- **T-310's soak has not been run**, only made runnable. The multi-day
+  run, the RSS trend call, the SCStream-versus-periodic decision, the
+  fallback note, and the macOS 26.1 TCC quirk all still need a human.
 
 ## Landmines
 
