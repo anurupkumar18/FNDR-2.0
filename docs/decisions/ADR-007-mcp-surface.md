@@ -113,11 +113,25 @@ the two alpha capability ids reject arguments outside their narrow contracts.
 No decision changes here; this records what exists so the inventory above
 stays the source of record rather than an aspiration.
 
-Eight of the fourteen founding tools are implemented: `fndr.search`,
-`fndr.privacy_status`, `fndr.timeline`, `fndr.delta`,
-`fndr.source_evidence`, `fndr.open_target`, `fndr.recall`, and
+Twelve of the fourteen founding tools are implemented: `fndr.search`,
+`fndr.context_pack`, `fndr.privacy_status`, `fndr.timeline`, `fndr.delta`,
+`fndr.active_focus`, `fndr.source_evidence`, `fndr.open_target`,
+`fndr.recall`, `fndr.explain_retrieval`, `fndr.feedback`, and
 `fndr.remember_decision`. `docs/mcp.md` now exists and carries their
 per-tool contracts, so the versioning clause above points at a real file.
+
+The remaining two are blocked on absent data models rather than on effort,
+and building them now would mean returning empty results that read as
+"you have none":
+
+- `fndr.project_context` has no project entity to describe. Nothing in
+  capture or storage identifies a project.
+- `fndr.graph_context` has graph tables from schema v1 that nothing
+  writes, so every neighborhood would be empty.
+
+Both wait for their producers (T-1101's graph taxonomy, and whatever
+introduces a project entity). This is the same reasoning that makes
+`fndr.recall` refuse its unbacked kinds instead of answering them empty.
 
 Gaps against this ADR's own requirements, tracked in T-702's ledger row
 rather than silently carried:
