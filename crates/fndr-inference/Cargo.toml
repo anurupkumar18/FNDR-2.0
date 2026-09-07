@@ -6,3 +6,10 @@ license.workspace = true
 
 [dependencies]
 thiserror = "2"
+llama-cpp-2 = "=0.1.156"
+
+[features]
+# Off by default so this crate (and CI, which may run without a GPU/Metal
+# backend) always builds on CPU-only llama.cpp. Real usage on Apple Silicon
+# should enable it.
+metal = ["llama-cpp-2/metal"]

@@ -403,6 +403,72 @@ Rule: when adding a heavy dependency, say so in the PR body, expect the
 first run to bust the budget once, and verify the cached follow-up run
 returns under it.
 
+## 2026-09-06 · Clamp before casting, and prove the test can fail
+Cost: a self-review catch, not a production bug — but only because the
+review happened. Extracting a `50` literal into a named `SEARCH_LIMIT_CAP`
+turned `limit.min(50) as i64` into `(limit as i64).min(CAP)`. A `usize`
+above `i64::MAX` casts to `-1`, and SQLite reads `LIMIT -1` as *no limit*,
+so the "safety" cap silently became unbounded.
+Root cause: reordering a clamp and a cast looks like a formatting change and
+is a semantic one. The first regression test written for it also passed
+against the bug, because the fixture held fewer rows than the cap.
+Rule: clamp in the target domain before casting (`limit.min(CAP as usize) as
+i64`). And when a test exists to catch a specific regression, reintroduce
+the bug once and watch it fail — a test whose fixture is too small to
+distinguish the two behaviors is theater.
+
+## 2026-09-06 · `make test | tail` reports the pipe's exit code, not make's
+Cost: a full gate re-run, and a few minutes believing a green gate that had
+not been verified.
+Root cause: `make test 2>&1 | tail -150` exits with `tail`'s status, which is
+0 whether or not `make` failed. The truncation also cut the failing crate's
+output out of the saved log, so neither the exit code nor the text showed
+the failure.
+Rule: run the gate as `make test > /tmp/gate.log 2>&1; echo "EXIT=$?"` and
+grep the full log, rather than piping it through `tail`/`head`. Beware the
+mirror-image trap when checking: a trailing `grep -c FAILED` that finds
+nothing exits 1 and makes a green run look failed. An exit code you did not
+actually read is not a verification.
+
+## 2026-09-06 · Nanosecond timestamps are not a per-thread unique ID
+Cost: an intermittent `make test` failure (`Lance(TableAlreadyExists)`)
+across two unrelated `capture_scheduler` tests, misdiagnosed at first as
+caused by an unrelated same-session change to a different crate.
+Root cause: a test helper built a "unique" Lance directory from
+`process::id()` + `SystemTime::now()` nanos only. `cargo test` runs tests in
+one process on separate threads; two threads can read the same clock value,
+so two tests collided on the same Lance table path.
+Rule: never rely on a raw timestamp alone for per-test-run uniqueness inside
+one process; pair it with a process-wide `AtomicU64` counter (or a crate
+like `tempfile` that guarantees this). A flaky failure that reproduces at a
+different assertion/line on retry, in a file the current diff never touched,
+is a signal to check test isolation before assuming the diff is at fault.
+
+## 2026-09-06 · A Tauri app binary needs its build context and icon from day one
+Cost: several compile cycles while turning a library-only shell into a runnable
+desktop host.
+Root cause: `tauri::generate_context!` needs a build-script `OUT_DIR`, while
+`tauri::tauri_build_context!` needs `tauri-build` code generation explicitly
+enabled; the generated desktop context also requires a real PNG icon even when
+the first host creates no window.
+Rule: when adding the first runnable Tauri binary, add the pinned
+`tauri-build` build dependency, `build.rs` with `CodegenContext`,
+`tauri.conf.json`, and the product icon in the same slice; compile the binary
+as part of the focused gate before claiming the shell is runnable.
+
+## 2026-09-06 · `target/` grew to 72 GiB and nearly exhausted the disk
+Cost: a session paused at the demo-readiness gate because the machine had 4
+GiB free, blocking any further native build or the human rehearsal.
+Root cause: repeated full-workspace `CARGO_BUILD_JOBS=1` rebuilds (forced by
+low-memory/low-core gates) plus multiple binaries (shell, sidecar, mcp, bench)
+each accumulate their own incremental artifacts under `target/debug`; nothing
+in this repo ever pruned it, so it grew unbounded across sessions.
+Rule: check `du -sh target` before starting a build-heavy session; run `make
+clean` (now wraps `cargo clean`) when it passes a few GiB, since debug build
+output is fully regenerable and never worth protecting. Don't let a low-disk
+warning block work silently -- surface it and clean instead of routing around
+it with partial builds.
+
 <!-- Inlined from .claude/skills/fndr-feature-dev/SKILL.md -->
 
 

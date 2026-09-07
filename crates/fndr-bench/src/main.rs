@@ -1,23 +1,32 @@
 //! `make bench` entry point. Usage:
 //!   fndr-bench --corpus <dir> [--out <metrics.json>] [--baseline <baseline.json>]
+//!   fndr-bench --route vector --corpus <dir> --model <gguf> --work-dir <empty-dir>
 //! Exits nonzero on a quality regression against the baseline, so CI and
 //! humans get the same gate.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use fndr_bench::{BenchReport, Corpus, compare_to_baseline, run_fts_baseline};
+use fndr_bench::{BenchReport, Corpus, compare_to_baseline, run_fts_baseline, run_vector_baseline};
+use fndr_inference::{CHUNK_EMBEDDING_V1, GgufEmbedder};
 
-fn main() -> ExitCode {
+#[tokio::main]
+async fn main() -> ExitCode {
     let mut corpus_dir: Option<PathBuf> = None;
     let mut out: Option<PathBuf> = None;
     let mut baseline: Option<PathBuf> = None;
+    let mut route = "fts".to_owned();
+    let mut model: Option<PathBuf> = None;
+    let mut work_dir: Option<PathBuf> = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--corpus" => corpus_dir = args.next().map(PathBuf::from),
             "--out" => out = args.next().map(PathBuf::from),
             "--baseline" => baseline = args.next().map(PathBuf::from),
+            "--route" => route = args.next().unwrap_or_default(),
+            "--model" => model = args.next().map(PathBuf::from),
+            "--work-dir" => work_dir = args.next().map(PathBuf::from),
             other => {
                 eprintln!("unknown arg: {other}");
                 return ExitCode::from(2);
@@ -25,7 +34,9 @@ fn main() -> ExitCode {
         }
     }
     let Some(corpus_dir) = corpus_dir else {
-        eprintln!("usage: fndr-bench --corpus <dir> [--out <file>] [--baseline <file>]");
+        eprintln!(
+            "usage: fndr-bench --corpus <dir> [--out <file>] [--baseline <file>] [--route fts|vector --model <gguf> --work-dir <dir>]"
+        );
         return ExitCode::from(2);
     };
 
@@ -36,7 +47,46 @@ fn main() -> ExitCode {
             return ExitCode::from(1);
         }
     };
-    let report = match run_fts_baseline(&corpus) {
+    let report = match route.as_str() {
+        "fts" => run_fts_baseline(&corpus),
+        "vector" => {
+            let Some(model) = model else {
+                eprintln!("vector route requires --model <gguf>");
+                return ExitCode::from(2);
+            };
+            let Some(work_dir) = work_dir else {
+                eprintln!("vector route requires --work-dir <empty-dir>");
+                return ExitCode::from(2);
+            };
+            if work_dir.exists()
+                && std::fs::read_dir(&work_dir)
+                    .map(|entries| entries.into_iter().next().is_some())
+                    .unwrap_or(true)
+            {
+                eprintln!(
+                    "vector route requires an empty work directory: {}",
+                    work_dir.display()
+                );
+                return ExitCode::from(2);
+            }
+            if let Err(error) = std::fs::create_dir_all(&work_dir) {
+                eprintln!("could not prepare {}: {error}", work_dir.display());
+                return ExitCode::from(1);
+            }
+            match GgufEmbedder::load(&model, CHUNK_EMBEDDING_V1) {
+                Ok(embedder) => run_vector_baseline(&corpus, &work_dir, &embedder).await,
+                Err(error) => {
+                    eprintln!("could not load vector model: {error}");
+                    return ExitCode::from(1);
+                }
+            }
+        }
+        other => {
+            eprintln!("unknown route: {other} (expected fts or vector)");
+            return ExitCode::from(2);
+        }
+    };
+    let report = match report {
         Ok(report) => report,
         Err(e) => {
             eprintln!("bench run failed: {e}");

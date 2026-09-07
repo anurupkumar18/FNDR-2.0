@@ -4,10 +4,16 @@
 //! place a non-real embedder may exist.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
-use fndr_inference::{CHUNK_EMBEDDING_V1, EmbedError, Embedder, EmbeddingSpec};
-use fndr_store::{LanceWriter, NewChunk, NewRecord, Store};
+use fndr_inference::{
+    CHUNK_EMBEDDING_V1, EmbedError, Embedder, EmbeddingSpec, ModelWorkerHandle, Priority,
+    QueuedEmbedder,
+};
+use fndr_privacy::sanitize_url_for_storage;
+use fndr_store::{DeleteScope, LanceWriter, NewChunk, NewRecord, Store, delete_everywhere};
 
 struct TestEmbedder {
     fail: AtomicBool,
@@ -68,6 +74,8 @@ fn seed_capture(store: &mut Store, record_id: &str, n_chunks: usize) {
         session_id: "s1".into(),
         source: "screen".into(),
         app_name: "Terminal".into(),
+        bundle_id: None,
+        url: None,
         window_title: "fndr".into(),
         captured_at_ms: 1_755_000_000_000,
         created_at_ms: 1_755_000_000_000,
@@ -80,6 +88,30 @@ fn seed_capture(store: &mut Store, record_id: &str, n_chunks: usize) {
         })
         .collect();
     store.insert_capture(&record, &chunks).unwrap();
+}
+
+fn seed_capture_at(store: &mut Store, record_id: &str, captured_at_ms: i64, url: Option<&str>) {
+    let record = NewRecord {
+        id: record_id.to_string(),
+        session_id: "s1".into(),
+        source: "screen".into(),
+        app_name: "Terminal".into(),
+        bundle_id: None,
+        url: url.and_then(sanitize_url_for_storage),
+        window_title: "fndr".into(),
+        captured_at_ms,
+        created_at_ms: captured_at_ms,
+    };
+    store
+        .insert_capture(
+            &record,
+            &[NewChunk {
+                id: format!("{record_id}-c0"),
+                ord: 0,
+                text: format!("chunk of {record_id}"),
+            }],
+        )
+        .unwrap();
 }
 
 #[tokio::test]
@@ -165,6 +197,174 @@ async fn wrong_dimension_write_is_refused() {
         1,
         "nothing stamped"
     );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// T-403 integration: `LanceWriter::flush_once` needs only `&dyn Embedder`,
+/// so a `QueuedEmbedder` (routing through a real `ModelWorkerHandle`) slots
+/// in with zero changes to `LanceWriter` itself.
+#[tokio::test]
+async fn flush_once_works_through_the_model_worker_queue() {
+    let dir = scratch("via-queue");
+    let mut store = Store::open(&dir.join("fndr.sqlite3")).unwrap();
+    seed_capture(&mut store, "r1", 2);
+
+    let worker = Arc::new(ModelWorkerHandle::spawn(
+        || Ok(Box::new(TestEmbedder::good()) as Box<dyn Embedder>),
+        Duration::from_secs(30),
+    ));
+    let queued = QueuedEmbedder::new(worker, Priority::Backfill, CHUNK_EMBEDDING_V1);
+
+    let writer = LanceWriter::new(&dir.join("index"));
+    let report = writer.flush_once(&mut store, &queued, 42).await.unwrap();
+    assert_eq!(report.written, 2);
+    assert!(store.pending_chunks(10).unwrap().is_empty());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn deletion_everywhere_removes_suffix_domain_records_from_sqlite_and_lance() {
+    let dir = scratch("delete-domain");
+    let mut store = Store::open(&dir.join("fndr.sqlite3")).unwrap();
+    seed_capture_at(
+        &mut store,
+        "bank-root",
+        10,
+        Some("https://bank.com/account"),
+    );
+    seed_capture_at(
+        &mut store,
+        "bank-subdomain",
+        20,
+        Some("https://online.bank.com/account"),
+    );
+    seed_capture_at(&mut store, "burbank", 30, Some("https://burbank.com/"));
+
+    let writer = LanceWriter::new(&dir.join("index"));
+    writer
+        .flush_once(&mut store, &TestEmbedder::good(), 42)
+        .await
+        .unwrap();
+
+    let report = delete_everywhere(
+        &mut store,
+        &writer,
+        &DeleteScope::Domain("bank.com".into()),
+        &CHUNK_EMBEDDING_V1,
+    )
+    .await
+    .unwrap();
+    assert_eq!(report.records, 2);
+    assert_eq!(report.indexed_chunks, 2);
+    assert_eq!(
+        store.record_ids_for_delete(&DeleteScope::All).unwrap(),
+        vec!["burbank"]
+    );
+
+    let db = lancedb::connect(dir.join("index").to_str().unwrap())
+        .execute()
+        .await
+        .unwrap();
+    let table = db.open_table("chunks_v1_qwen768").execute().await.unwrap();
+    assert_eq!(table.count_rows(None).await.unwrap(), 1);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn deletion_scopes_cover_record_time_and_all_without_a_derived_table() {
+    let dir = scratch("delete-scopes");
+    let mut store = Store::open(&dir.join("fndr.sqlite3")).unwrap();
+    seed_capture_at(&mut store, "early", 10, None);
+    seed_capture_at(&mut store, "middle", 20, None);
+    seed_capture_at(&mut store, "late", 30, None);
+    let writer = LanceWriter::new(&dir.join("index"));
+
+    assert_eq!(
+        delete_everywhere(
+            &mut store,
+            &writer,
+            &DeleteScope::RecordIds(vec!["early".into(), "missing".into()]),
+            &CHUNK_EMBEDDING_V1,
+        )
+        .await
+        .unwrap()
+        .records,
+        1
+    );
+    assert_eq!(
+        delete_everywhere(
+            &mut store,
+            &writer,
+            &DeleteScope::TimeRange {
+                start_ms: 15,
+                end_ms: 25,
+            },
+            &CHUNK_EMBEDDING_V1,
+        )
+        .await
+        .unwrap()
+        .records,
+        1
+    );
+    assert_eq!(
+        delete_everywhere(&mut store, &writer, &DeleteScope::All, &CHUNK_EMBEDDING_V1,)
+            .await
+            .unwrap()
+            .records,
+        1
+    );
+    assert!(
+        store
+            .record_ids_for_delete(&DeleteScope::All)
+            .unwrap()
+            .is_empty()
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Owner deletion must erase the same durable evidence returned by the first
+/// production retrieval route, even when there is no Lance table yet.
+#[tokio::test]
+async fn deletion_everywhere_removes_keyword_search_evidence() {
+    let dir = scratch("delete-keyword-evidence");
+    let mut store = Store::open(&dir.join("fndr.sqlite3")).unwrap();
+    store
+        .insert_capture(
+            &NewRecord {
+                id: "sensitive-record".into(),
+                session_id: "s1".into(),
+                source: "screen".into(),
+                app_name: "Terminal".into(),
+                bundle_id: None,
+                url: None,
+                window_title: "fndr".into(),
+                captured_at_ms: 10,
+                created_at_ms: 10,
+            },
+            &[NewChunk {
+                id: "sensitive-chunk".into(),
+                ord: 0,
+                text: "needle evidence that must disappear".into(),
+            }],
+        )
+        .unwrap();
+    assert_eq!(store.search_chunks("needle", 10).unwrap().len(), 1);
+
+    let writer = LanceWriter::new(&dir.join("index"));
+    let report = delete_everywhere(
+        &mut store,
+        &writer,
+        &DeleteScope::RecordIds(vec!["sensitive-record".into()]),
+        &CHUNK_EMBEDDING_V1,
+    )
+    .await
+    .unwrap();
+    assert_eq!(report.records, 1);
+    assert!(store.search_chunks("needle", 10).unwrap().is_empty());
 
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -8,7 +8,7 @@ use std::net::{SocketAddr, TcpStream};
 use std::time::Duration;
 
 use fndr_mcp::{FndrMcpServer, serve_loopback};
-use fndr_store::SkeletonStore;
+use fndr_store::Store;
 
 const INITIALIZE_BODY: &str = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"0"}}}"#;
 
@@ -35,7 +35,7 @@ fn raw_post(addr: SocketAddr, extra_headers: &[String]) -> String {
 }
 
 async fn start() -> (SocketAddr, String) {
-    let store = SkeletonStore::open_in_memory().unwrap();
+    let store = Store::open_in_memory().unwrap();
     let server = FndrMcpServer::new(store);
     let token = fndr_mcp::generate_token();
     let (addr, _handle) = serve_loopback(server, token.clone(), 0).await.unwrap();

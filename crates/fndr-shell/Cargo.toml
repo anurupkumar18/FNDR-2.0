@@ -3,14 +3,28 @@ name = "fndr-shell"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+default-run = "fndr-shell"
 
 [dependencies]
+fndr-capture = { path = "../fndr-capture" }
+fndr-inference = { path = "../fndr-inference" }
+fndr-memory = { path = "../fndr-memory" }
+fndr-ocr = { path = "../fndr-ocr" }
+fndr-privacy = { path = "../fndr-privacy" }
+fndr-store = { path = "../fndr-store" }
 fndr-types = { path = "../fndr-types" }
+core-graphics = "=0.25.0"
 serde = { version = "1", features = ["derive"] }
-tauri = "2"
+tauri = { version = "=2.11.5", features = ["tray-icon"] }
+tauri-plugin-single-instance = "=2.4.4"
 # Exact pins per ADR-001: the specta family is permanently release-candidate
 # and breaking changes land between RCs. Upgrades are scheduled maintenance
 # PRs, never drive-by bumps.
 specta = { version = "=2.0.0-rc.25", features = ["derive", "function"] }
 specta-typescript = "=0.0.12"
 tauri-specta = { version = "=2.0.0-rc.25", features = ["derive", "typescript"] }
+thiserror = "2"
+libc = "0.2"
+
+[build-dependencies]
+tauri-build = { version = "=2.6.3", features = ["codegen"] }

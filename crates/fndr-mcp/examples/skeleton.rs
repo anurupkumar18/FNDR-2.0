@@ -5,7 +5,8 @@
 //!
 //! ```sh
 //! # From a screenshot file (no permissions needed):
-//! cargo run -p fndr-mcp --example skeleton -- --image path/to/screen.png
+//! cargo run -p fndr-mcp --example skeleton -- --image path/to/screen.png \
+//!   --store /tmp/fndr-alpha.sqlite3
 //!
 //! # From the live screen (grants Screen Recording to your terminal):
 //! cargo run -p fndr-mcp --example skeleton
@@ -14,21 +15,50 @@
 //! cargo run -p fndr-mcp --example skeleton -- --image x.png --query "hello"
 //! ```
 
-use fndr_capture::{FrameSource, PngFileSource, ScreencaptureCliSource};
+use fndr_capture::{FrameSource, PngFileSource, ScreenCaptureKitSource};
 use fndr_mcp::{FndrMcpServer, generate_token, serve_loopback};
 use fndr_ocr::OcrEngine;
-use fndr_store::SkeletonStore;
+use fndr_privacy::{
+    Blocklist, SafetyContext, SafetyDecision, evaluate, redact_secret_lines,
+    sanitize_url_for_storage,
+};
+use fndr_retrieval::KeywordRetriever;
+use fndr_store::{DeleteScope, NewChunk, NewRecord, Store};
 
 fn main() {
     tracing_subscriber::fmt().init();
 
     let mut image: Option<String> = None;
     let mut query: Option<String> = None;
+    let mut store_path: Option<String> = None;
+    let mut app_name: Option<String> = None;
+    let mut url: Option<String> = None;
+    let mut window_title: Option<String> = None;
+    let mut blocked_apps: Vec<String> = Vec::new();
+    let mut blocked_domains: Vec<String> = Vec::new();
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--image" => image = args.next(),
             "--query" => query = args.next(),
+            "--store" => store_path = args.next(),
+            "--app" => app_name = args.next(),
+            "--url" => url = args.next(),
+            "--title" => window_title = args.next(),
+            "--block-app" => {
+                let Some(app) = args.next() else {
+                    eprintln!("--block-app requires an app name");
+                    std::process::exit(2);
+                };
+                blocked_apps.push(app);
+            }
+            "--block-domain" => {
+                let Some(domain) = args.next() else {
+                    eprintln!("--block-domain requires a domain");
+                    std::process::exit(2);
+                };
+                blocked_domains.push(domain);
+            }
             other => {
                 eprintln!("unknown arg: {other}");
                 std::process::exit(2);
@@ -38,7 +68,7 @@ fn main() {
 
     let frame = match &image {
         Some(path) => PngFileSource { path: path.into() }.grab(),
-        None => ScreencaptureCliSource.grab(),
+        None => ScreenCaptureKitSource::default().grab(),
     };
     let frame = match frame {
         Ok(frame) => frame,
@@ -51,6 +81,22 @@ fn main() {
     };
     println!("captured {} bytes of PNG", frame.png.len());
 
+    let blocklist = Blocklist::new(&blocked_apps, &blocked_domains);
+    let pre_ocr_decision = evaluate(
+        SafetyContext {
+            app_name: app_name.as_deref(),
+            bundle_id: None,
+            url: url.as_deref(),
+            window_title: window_title.as_deref(),
+            ocr_text: None,
+        },
+        &blocklist,
+    );
+    if let SafetyDecision::SkipStorage(reason) = pre_ocr_decision {
+        eprintln!("capture skipped before OCR: {reason:?}");
+        std::process::exit(3);
+    }
+
     let engine = OcrEngine::new().expect("Vision framework unavailable");
     let recognized = engine
         .recognize_with_metadata(&frame.png)
@@ -62,14 +108,69 @@ fn main() {
         recognized.0.confidence
     );
 
-    let store = SkeletonStore::open_in_memory().expect("store");
+    let decision = evaluate(
+        SafetyContext {
+            app_name: app_name.as_deref(),
+            bundle_id: None,
+            url: url.as_deref(),
+            window_title: window_title.as_deref(),
+            ocr_text: Some(&recognized.0.text),
+        },
+        &blocklist,
+    );
+    let text = match decision {
+        SafetyDecision::Allow => recognized.0.text,
+        SafetyDecision::Redact(reason) => {
+            let (redacted, count) = redact_secret_lines(&recognized.0.text);
+            println!("redacted {count} OCR line(s): {reason:?}");
+            redacted
+        }
+        SafetyDecision::SkipStorage(reason) => {
+            eprintln!("capture skipped after OCR: {reason:?}");
+            std::process::exit(3);
+        }
+    };
+
+    let mut store = match store_path {
+        Some(path) => Store::open(std::path::Path::new(&path)),
+        None => Store::open_in_memory(),
+    }
+    .expect("store");
+    let record_id = format!("skeleton-{}", frame.captured_at_ms);
+    let chunk_id = format!("{record_id}-0");
     store
-        .insert_record(frame.captured_at_ms as i64, "screen", &recognized.0.text)
+        .insert_capture(
+            &NewRecord {
+                id: record_id.clone(),
+                session_id: "skeleton-session".into(),
+                source: "screen".into(),
+                app_name: app_name.clone().unwrap_or_default(),
+                bundle_id: None,
+                url: url.as_deref().and_then(sanitize_url_for_storage),
+                window_title: window_title.clone().unwrap_or_default(),
+                captured_at_ms: frame.captured_at_ms as i64,
+                created_at_ms: frame.captured_at_ms as i64,
+            },
+            &[NewChunk {
+                id: chunk_id,
+                ord: 0,
+                text,
+            }],
+        )
         .expect("insert");
-    println!("stored 1 record");
+    println!(
+        "stored 1 record; total records: {}",
+        store
+            .record_ids_for_delete(&DeleteScope::All)
+            .expect("count")
+            .len()
+    );
 
     if let Some(q) = query {
-        for hit in store.search(&q, 10).expect("search") {
+        for hit in KeywordRetriever::new(&store)
+            .search(&q, 10)
+            .expect("search")
+        {
             println!("hit #{}: {}", hit.record_id, hit.snippet);
         }
         return;
@@ -78,7 +179,7 @@ fn main() {
     let token = generate_token();
     let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
     runtime.block_on(async move {
-        let (addr, handle) = serve_loopback(FndrMcpServer::new(store), token.clone(), 0)
+        let (addr, handle) = serve_loopback(FndrMcpServer::with_blocklist(store, blocklist), token.clone(), 0)
             .await
             .expect("serve");
         println!("\nMCP serving at http://{addr}/mcp");

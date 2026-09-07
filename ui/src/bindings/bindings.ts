@@ -5,9 +5,97 @@ import { invoke as __TAURI_INVOKE } from "@tauri-apps/api/core";
 /** Commands */
 export const commands = {
 	engineInfo: () => __TAURI_INVOKE<EngineInfo>("engine_info"),
+	/**
+	 *  The latest pushed capture state. The UI should subscribe to
+	 *  `capture://status` after this initial read; it must not poll this command.
+	 */
+	captureStatus: () => __TAURI_INVOKE<CaptureRuntimeStatus>("capture_status"),
+	/**
+	 *  Read the current macOS Screen Recording preflight without requesting it.
+	 *  This is intentionally available before `start_capture`, so the trust
+	 *  window can render the status before a person chooses to begin capture.
+	 */
+	screenRecordingPreflight: () => __TAURI_INVOKE<ScreenRecordingAccess>("screen_recording_preflight"),
+	/**
+	 *  Starts capture only after an explicit action in the desktop trust screen.
+	 *  The configured paths come from the local launch command; they are not
+	 *  surfaced to the webview or accepted from IPC.
+	 */
+	startCapture: () => typedError<CaptureRuntimeStatus, string>(__TAURI_INVOKE("start_capture")),
+	/**
+	 *  Show the machine owner's local MCP audit ledger. This command is bounded
+	 *  and read-only; it deliberately returns no capture content or query text.
+	 */
+	recentAuditEntries: () => typedError<AuditLogEntry[], string>(__TAURI_INVOKE("recent_audit_entries")),
+	/**
+	 *  Explicitly pauses or resumes new capture opportunities. Failures are
+	 *  stable operator codes rather than dependency messages, which could expose
+	 *  environment details through the desktop bridge.
+	 */
+	setCapturePaused: (paused: boolean) => typedError<CaptureRuntimeStatus, string>(__TAURI_INVOKE("set_capture_paused", { paused })),
 };
 
 /* Types */
+/**
+ *  A content-free record of one MCP call for the local owner audit viewer.
+ *  This mirrors only the privacy-preserving `mcp_audit` columns: no query,
+ *  record identifier, capture text, URL, or model output crosses IPC.
+ */
+export type AuditLogEntry = {
+	/**  JavaScript-safe IPC timestamp convention: milliseconds as `f64`. */
+	at_ms: number | null,
+	tool: string,
+	outcome: string,
+	raw_released: boolean,
+};
+
+/**
+ *  The indexing side of a capture opportunity. SQLite persistence can succeed
+ *  while the derived Lance index is pending or failed, so the two states stay
+ *  separate rather than collapsing into a misleading single green state.
+ */
+export type CaptureFlushState = "not_due" | "flushed" | "failed";
+
+/**
+ *  The shell-owned capture worker's current lifecycle state. This is an IPC
+ *  state, not a persisted record lifecycle: it deliberately says whether the
+ *  desktop is collecting new context right now.
+ */
+export type CaptureRuntimeState = "starting" | "running" | "paused" | "blocked" | "stopped";
+
+/**
+ *  Push event payload for `capture://status`. Milliseconds use `f64` because
+ *  IPC follows ADR-001's no-64-bit-integer convention.
+ */
+export type CaptureRuntimeStatus = {
+	state: CaptureRuntimeState,
+	observed_at_ms: number | null,
+	tick: CaptureTickStatus | null,
+	shutdown_flushed_chunks: number | null,
+	/**
+	 *  A stable, operator-facing startup/shutdown code. It is intentionally
+	 *  not an arbitrary dependency error string.
+	 */
+	reason: string | null,
+};
+
+/**
+ *  A content-free classification of one capture opportunity. Raw OCR text,
+ *  window titles, URLs, and image data must never cross this status boundary.
+ */
+export type CaptureTickState = "stored" | "url_only_stored" | "skipped" | "failed";
+
+/**  The bounded, content-free detail attached to a running capture status. */
+export type CaptureTickStatus = {
+	capture: CaptureTickState,
+	flush: CaptureFlushState,
+	/**
+	 *  A stable pipeline reason, never an underlying error message that might
+	 *  contain operating-system or captured-context details.
+	 */
+	reason: string | null,
+};
+
 /**
  *  Build information the shell and MCP status surfaces report. Also the
  *  pipeline probe for T-105: its round-trip into `ui/` proves the generated
@@ -16,4 +104,21 @@ export const commands = {
 export type EngineInfo = {
 	app_version: string,
 };
+
+/**
+ *  The current result of the non-prompting macOS Screen Recording preflight.
+ *  It says nothing about capture itself and is deliberately distinct from the
+ *  API that requests permission.
+ */
+export type ScreenRecordingAccess = "granted" | "not_granted";
+
+/* Tauri Specta runtime */
+async function typedError<T, E>(result: Promise<T>): Promise<{ status: "ok"; data: T } | { status: "error"; error: E }> {
+    try {
+        return { status: "ok", data: await result };
+    } catch (e) {
+        if (e instanceof Error) throw e;
+        return { status: "error", error: e as any };
+    }
+}
 

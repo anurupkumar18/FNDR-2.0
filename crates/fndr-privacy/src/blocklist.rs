@@ -9,6 +9,18 @@
 
 use url::Url;
 
+/// A browser URL that is safe to retain as capture metadata. It can only be
+/// constructed by [`sanitize_url_for_storage`], which removes sensitive URL
+/// components before the value reaches a persistence boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SanitizedUrl(String);
+
+impl SanitizedUrl {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 /// User-configured capture exclusions. Entries are normalized on
 /// construction; matching is total (no allocation-order or config-order
 /// dependence) and case-insensitive.
@@ -29,7 +41,10 @@ fn normalize_app(entry: &str) -> String {
         .to_lowercase()
 }
 
-fn normalize_domain(entry: &str) -> Option<String> {
+/// Normalize a user-provided domain or URL into the host form used by every
+/// privacy/storage policy. Callers must not implement their own substring
+/// matching for destructive domain operations.
+pub fn normalize_domain(entry: &str) -> Option<String> {
     let trimmed = entry.trim().trim_start_matches('.').to_lowercase();
     // Accept either a bare host ("bank.com") or a pasted URL.
     let host = if trimmed.contains("://") {
@@ -42,11 +57,43 @@ fn normalize_domain(entry: &str) -> Option<String> {
 
 /// True when `host` equals `suffix` or is a subdomain of it, on label
 /// boundaries. "bank.com" matches "online.bank.com", never "burbank.com".
-fn host_matches_suffix(host: &str, suffix: &str) -> bool {
+pub(crate) fn host_matches_suffix(host: &str, suffix: &str) -> bool {
     host == suffix
         || (host.len() > suffix.len()
             && host.ends_with(suffix)
             && host.as_bytes()[host.len() - suffix.len() - 1] == b'.')
+}
+
+pub(crate) fn host_from_url(url: &str) -> Option<String> {
+    Url::parse(url.trim())
+        .ok()
+        .and_then(|url| url.host_str().map(|host| host.to_lowercase()))
+        .or_else(|| normalize_domain(url))
+}
+
+/// Whether a retained (already-sanitized) URL belongs to `domain` or one of
+/// its subdomains. This shares the blocklist's label-boundary semantics so a
+/// destructive request for `bank.com` can never match `burbank.com`.
+pub fn url_matches_domain_suffix(url: &str, domain: &str) -> bool {
+    let Some(domain) = normalize_domain(domain) else {
+        return false;
+    };
+    host_from_url(url).is_some_and(|host| host_matches_suffix(&host, &domain))
+}
+
+/// Keep the stable browser location while removing credentials and the query
+/// or fragment values most likely to contain secrets. Invalid and non-web URLs
+/// have no safe capture representation and therefore return `None`.
+pub fn sanitize_url_for_storage(url: &str) -> Option<SanitizedUrl> {
+    let mut parsed = Url::parse(url.trim()).ok()?;
+    if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
+        return None;
+    }
+    parsed.set_username("").ok()?;
+    parsed.set_password(None).ok()?;
+    parsed.set_query(None);
+    parsed.set_fragment(None);
+    Some(SanitizedUrl(parsed.into()))
 }
 
 impl Blocklist {
@@ -85,23 +132,20 @@ impl Blocklist {
         })
     }
 
+    pub fn app_count(&self) -> u32 {
+        self.apps.len() as u32
+    }
+
+    pub fn domain_count(&self) -> u32 {
+        self.domains.len() as u32
+    }
+
     /// Suffix-domain matching on the parsed host only. A blocked domain
     /// covers itself and its subdomains; it never escalates to a parent
     /// domain and never matches inside path, query, or unrelated hosts.
     pub fn blocks_url(&self, url: &str) -> bool {
-        let Some(host) = Url::parse(url.trim())
-            .ok()
-            .and_then(|u| u.host_str().map(|h| h.to_lowercase()))
-        else {
-            // Not parseable as an absolute URL: try it as a bare host, the
-            // shape window titles and address bars often provide.
-            let Some(host) = normalize_domain(url) else {
-                return false;
-            };
-            return self
-                .domains
-                .iter()
-                .any(|suffix| host_matches_suffix(&host, suffix));
+        let Some(host) = host_from_url(url) else {
+            return false;
         };
         self.domains
             .iter()
@@ -186,6 +230,18 @@ mod tests {
     }
 
     #[test]
+    fn retained_url_domain_matching_keeps_label_boundaries() {
+        assert!(url_matches_domain_suffix(
+            "https://online.bank.com/account",
+            "bank.com"
+        ));
+        assert!(!url_matches_domain_suffix(
+            "https://burbank.com/",
+            "bank.com"
+        ));
+    }
+
+    #[test]
     fn subdomain_entry_does_not_escalate_to_parent() {
         let bl = blocklist(&[], &["mail.google.com"]);
         assert!(bl.blocks_url("https://mail.google.com/u/0"));
@@ -202,6 +258,16 @@ mod tests {
         let bl = blocklist(&[], &["bank.com"]);
         assert!(!bl.blocks_url("https://example.com/bank.com/page"));
         assert!(!bl.blocks_url("https://example.com/?next=bank.com"));
+    }
+
+    #[test]
+    fn storage_url_removes_credentials_queries_and_fragments() {
+        assert_eq!(
+            sanitize_url_for_storage("https://alice:secret@example.com/work?token=abc#section"),
+            Some(SanitizedUrl("https://example.com/work".to_owned()))
+        );
+        assert_eq!(sanitize_url_for_storage("file:///private/note"), None);
+        assert_eq!(sanitize_url_for_storage("not a url"), None);
     }
 
     #[test]

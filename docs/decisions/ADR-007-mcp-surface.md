@@ -69,3 +69,100 @@ The main tension is capability breadth vs agent usability and security surface. 
 ## Amendment (2026-08-21, walking skeleton validation)
 
 The `fndr.` dotted tool namespace is confirmed legal per the MCP tool-name specification (letters, digits, underscore, dash, dot; validated in the official Rust SDK), so the inventory keeps its names unchanged. The auth-always posture shipped with the first tool: bearer with constant-time compare, Host and Origin allowlists, a global rate limit, uniform deny bodies with audit logging, and the named regression tests (`mcp_rejects_unauthenticated_loopback`, web-origin rejection with a valid token) exercising the real socket with raw HTTP. Note for T-701: rmcp 3.1's streamable HTTP server carries its own Host/Origin allowlist configuration underneath our middleware; keep both layers (defense in depth).
+
+## Amendment (2026-09-05, Connected Planner contract)
+
+ADR-008 adds an experimental Connected Planner mode without changing the 14
+founding-tool count, the ratified P1 additions, or the auth-always posture.
+It is disabled by default and is not an app-owned provider integration.
+
+**Runtime skills are resources, not tools.** `fndr://runtime-skills` lists
+locally validated skill metadata; `fndr://runtime-skills/{skill_id}` returns
+the exact reviewed `SKILL.md` content and declared capability ids. The
+resource response never includes credentials, hidden instructions, capture
+payloads, or executable code. Listing and reading require the
+`planner.read_skills` token scope, an explicit rate limit, and an audit event.
+Skill resources are unavailable while Connected Planner is disabled.
+
+**One experimental proposal tool:** `fndr.propose_action` accepts a planner's
+structured `ActionProposal` and returns either a locally stored, owner-visible
+proposal identifier or a typed refusal. It cannot execute any capability. The
+schema requires `capability_id`, canonical arguments, rationale, and evidence
+citations; it returns verification state, risk label, and the requirement for
+a separate action approval. In alpha, the only accepted identifiers are
+`memory.open_target` and `git.status.short` as defined in ADR-008. This tool
+requires `planner.propose_action`, has a per-tool rate limit, writes an audit
+event, rejects unknown or malformed input before persistence, and has schema
+round-trip and auth-failure tests.
+
+**Context-pack delivery is explicit.** `fndr.context_pack` remains local by
+default. A future `delivery: "planner_export"` request may only create a
+`PlannerExportDraft`, never send it. It requires a `planner.export` scope,
+the destination label, all normal citation and token-budget behavior, and the
+ADR-004 preview/one-time approval flow. `include_raw` remains an independent
+explicit gate. A changed draft digest, destination, policy version, or expiry
+must return a typed refusal rather than a new implicit approval.
+
+The implementation PR must add `docs/mcp.md` examples that execute against a
+dev server and prove: disabled mode hides planner resources; unauthenticated
+or wrongly scoped calls fail; draft approval cannot execute an action; and
+the two alpha capability ids reject arguments outside their narrow contracts.
+
+## Amendment (2026-09-06, implementation status)
+
+No decision changes here; this records what exists so the inventory above
+stays the source of record rather than an aspiration.
+
+Twelve of the fourteen founding tools are implemented: `fndr.search`,
+`fndr.context_pack`, `fndr.privacy_status`, `fndr.timeline`, `fndr.delta`,
+`fndr.active_focus`, `fndr.source_evidence`, `fndr.open_target`,
+`fndr.recall`, `fndr.explain_retrieval`, `fndr.feedback`, and
+`fndr.remember_decision`. `docs/mcp.md` now exists and carries their
+per-tool contracts, so the versioning clause above points at a real file.
+
+The remaining two are blocked on absent data models rather than on effort,
+and building them now would mean returning empty results that read as
+"you have none":
+
+- `fndr.project_context` has no project entity to describe. Nothing in
+  capture or storage identifies a project.
+- `fndr.graph_context` has graph tables from schema v1 that nothing
+  writes, so every neighborhood would be empty.
+
+Both wait for their producers (T-1101's graph taxonomy, and whatever
+introduces a project entity). This is the same reasoning that makes
+`fndr.recall` refuse its unbacked kinds instead of answering them empty.
+
+Gaps against this ADR's own requirements, tracked in T-702's ledger row
+rather than silently carried:
+
+1. **The audit log now exists** (added the same day this amendment was
+   written). Migration 0005's `mcp_audit` table records tool, outcome, and
+   whether raw capture text was released, and deliberately nothing else:
+   no query string, record id, or capture content. Auditing is structural
+   rather than per-handler discipline, and a test pins the audited tool set
+   to the router's registered set. T-902 now exposes a bounded, read-only
+   owner view in the desktop trust window; it reads only an existing vault
+   and transfers no query or capture content over IPC. Still open: retention
+   for that table and a human GUI rehearsal of the viewer.
+2. **No per-tool rate limits.** `fndr-mcp::auth::RateWindow` is one global
+   window; the per-tool scoping this ADR chose option A partly to preserve
+   is not built.
+3. **No `time_window` shorthand.** The carried convention (shorthand string,
+   unix ms, or from/to object) is unimplemented; `fndr.timeline` and
+   `fndr.delta` take explicit unix-ms bounds. The shared parser is deferred
+   until a second tool needs it rather than built speculatively for one.
+
+**"The only write tool" needs a qualifier.** The table calls
+`fndr.remember_decision` that, and the phrase predates two things that now
+also write: `fndr.feedback` records a rating in `result_feedback`, and every
+tool call writes an `mcp_audit` row. Both write to operational tables, never
+to memory. The distinction the table was drawing still holds, stated
+precisely: `fndr.remember_decision` is the only tool that adds to what FNDR
+remembers. `docs/mcp.md` and the tool's own description now say it that way.
+
+Two implemented tools are narrower than their table entry: `fndr.search` is
+a plain FTS5 keyword route with no hybrid ranking, filters, or surfacing
+reasons, and `fndr.recall` backs only its `decision` kind, refusing
+`error`/`blocker`/`todo` with a typed error rather than returning an empty
+list that reads as "you have none".

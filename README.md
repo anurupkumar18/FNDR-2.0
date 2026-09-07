@@ -1,8 +1,19 @@
 # FNDR
 
-Local-first screen-context memory engine for macOS. FNDR watches your screen (with consent and strict privacy gates), builds a searchable memory of what you worked on, and serves that memory to AI agents over MCP. Everything runs on-device; nothing derived from captured data ever leaves your machine.
+Local-first screen-context memory engine for macOS. FNDR watches your screen
+(with consent and strict privacy gates), builds a searchable memory of what
+you worked on, and serves that memory to AI agents over MCP. Capture, storage,
+and local reasoning stay on-device by default. A future Connected Planner mode
+will make every user-approved external export explicit; FNDR has no app-owned
+cloud client or background captured-data egress.
 
-Status: pre-alpha, M1 foundations in progress. The approved plan lives in `docs/` (PRD, ADRs under `docs/decisions/`, architecture, roadmap with a progress ledger). Working today: the walking skeleton (one frame captured, OCRed with Apple Vision, stored, and served to agents over authenticated MCP; see Try it below), schema v1 with migrations, the ported v1 perception heuristics, and a real `make bench` retrieval gate with a committed baseline.
+Status: alpha execution in progress. The approved plan lives in `docs/` (PRD,
+ADRs under `docs/decisions/`, architecture, roadmap with a progress ledger).
+Working today: the walking skeleton (one frame captured, privacy-gated before
+OCR, OCRed with Apple Vision, persisted locally, and served to agents over
+authenticated MCP; see Try it below), schema v1 with migrations, the ported
+v1 perception heuristics, and a real `make bench` retrieval gate with a
+committed baseline. See `docs/CONTEXT.md` for the verified current-state map.
 
 ## Layout
 
@@ -33,6 +44,47 @@ cargo run -p fndr-mcp --example skeleton
 It prints the `claude mcp add` line to connect Claude Code. Pass
 `--image <png>` to run from a screenshot file without any permissions, or
 `--query <text>` for a one-shot search instead of serving.
+
+For the desktop capture path, launch `fndr-shell` against an explicit local
+store and model in one terminal, then expose that same store to a local MCP
+client in a second terminal:
+
+```sh
+cargo run -p fndr-shell --bin fndr-shell -- --doctor --data-dir /tmp/fndr-demo \
+  --model models/Qwen3-Embedding-0.6B-Q8_0.gguf
+```
+
+```sh
+cargo run -p fndr-shell --bin fndr-shell -- --data-dir /tmp/fndr-demo \
+  --model models/Qwen3-Embedding-0.6B-Q8_0.gguf
+```
+
+```sh
+cargo run -p fndr-mcp -- --store /tmp/fndr-demo/vault.sqlite3
+```
+
+The capture host opens a trust/status window that contains no screen or OCR
+content. A normal launch neither requests Screen Recording nor starts capture:
+select **Start capture** only when deliberately demonstrating live capture.
+Afterward, closing the window keeps capture running in the menu bar; **Show
+FNDR** restores it and **Quit FNDR** drains capture before exit. The window's
+**Pause capture** button and the menu-bar **Pause / Resume Capture** control
+stop new capture opportunities only after the active worker acknowledges the
+request; they never drop an in-flight write. **Open audit log** reads the
+bounded local MCP ledger without creating a missing vault; it shows only time,
+tool, outcome, and the raw-text-release flag. The MCP command prints a
+one-process bearer token and connection command; do not record or commit that
+token.
+
+For a bounded demo narration and the current claim boundaries, use the
+[presenter card](docs/demo/PRESENTER-CARD.md) and
+[readiness checklist](docs/demo/DEMO-READINESS.md).
+
+`--doctor` is read-only: it checks only the supplied model and data paths,
+never starts Tauri or capture, and never requests Screen Recording.
+
+For a concise distinction between verified evidence and the presenter-operated
+hardware rehearsal, see [the alpha demo readiness checklist](docs/demo/DEMO-READINESS.md).
 
 ## v1 reference
 

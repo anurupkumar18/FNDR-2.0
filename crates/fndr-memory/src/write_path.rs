@@ -1,0 +1,332 @@
+//! The narrow handoff from assembled capture text to SQLite truth.
+//!
+//! This is deliberately a write seam, not a second capture loop or retrieval
+//! path: the scheduler owns the genuine pre-OCR decision, while this boundary
+//! rechecks policy and makes the final persistence decision visible to callers.
+
+use fndr_privacy::{
+    Blocklist, SafetyContext, SafetyDecision, SafetyReason, evaluate, redact_secret_lines,
+    sanitize_url_for_storage,
+};
+use fndr_store::{NewChunk, NewRecord, Store, StoreError};
+
+use crate::{ContinuityRecord, merge_story_text, should_merge};
+
+/// The already-assembled capture fields that may become one SQLite record and
+/// one chunk. IDs are supplied by the pipeline so this seam does not invent an
+/// identity scheme beside the future session/record contracts.
+#[derive(Debug, Clone, Copy)]
+pub struct CaptureForPersistence<'a> {
+    pub record_id: &'a str,
+    pub session_id: &'a str,
+    pub chunk_id: &'a str,
+    pub source: &'a str,
+    pub app_name: &'a str,
+    pub bundle_id: Option<&'a str>,
+    pub url: Option<&'a str>,
+    pub window_title: &'a str,
+    pub ocr_text: &'a str,
+    pub captured_at_ms: i64,
+    pub created_at_ms: i64,
+}
+
+/// The observable result of the last line of defense before persistence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PersistCaptureOutcome {
+    Stored {
+        record_id: String,
+        redaction_count: usize,
+    },
+    Merged {
+        record_id: String,
+        redaction_count: usize,
+    },
+    Skipped {
+        reason: SafetyReason,
+    },
+}
+
+/// Recheck policy immediately before writing a capture to SQLite.
+///
+/// The caller must run the first policy evaluation before OCR. This boundary
+/// repeats metadata checks so a future caller cannot persist a blocked record,
+/// then either redacts OCR secret lines or writes the record and its chunk in
+/// `Store`'s atomic transaction.
+pub fn persist_capture(
+    store: &mut Store,
+    capture: CaptureForPersistence<'_>,
+    blocklist: &Blocklist,
+) -> Result<PersistCaptureOutcome, StoreError> {
+    let metadata = safety_context(capture, None);
+    if let SafetyDecision::SkipStorage(reason) = evaluate(metadata, blocklist) {
+        return Ok(PersistCaptureOutcome::Skipped { reason });
+    }
+
+    let (text, redaction_count) =
+        match evaluate(safety_context(capture, Some(capture.ocr_text)), blocklist) {
+            SafetyDecision::Allow => (capture.ocr_text.to_owned(), 0),
+            SafetyDecision::Redact(_) => redact_secret_lines(capture.ocr_text),
+            SafetyDecision::SkipStorage(reason) => {
+                return Ok(PersistCaptureOutcome::Skipped { reason });
+            }
+        };
+
+    let record = NewRecord {
+        id: capture.record_id.to_owned(),
+        session_id: capture.session_id.to_owned(),
+        source: capture.source.to_owned(),
+        app_name: capture.app_name.to_owned(),
+        bundle_id: capture.bundle_id.map(str::to_owned),
+        url: capture.url.and_then(sanitize_url_for_storage),
+        window_title: capture.window_title.to_owned(),
+        captured_at_ms: capture.captured_at_ms,
+        created_at_ms: capture.created_at_ms,
+    };
+    let incoming = ContinuityRecord {
+        app_name: &record.app_name,
+        url: record.url.as_ref().map(|url| url.as_str()),
+        window_title: &record.window_title,
+        text: &text,
+        snippet: &record.window_title,
+        lexical_shadow: &text,
+        captured_at_ms: record.captured_at_ms,
+    };
+    let recent_after = record.captured_at_ms.saturating_sub(45 * 60 * 1_000);
+    for candidate in store.pending_continuity_candidates(recent_after, 64)? {
+        let candidate_record = ContinuityRecord {
+            app_name: &candidate.app_name,
+            url: candidate.url.as_deref(),
+            window_title: &candidate.window_title,
+            text: &candidate.text,
+            snippet: &candidate.window_title,
+            lexical_shadow: &candidate.text,
+            captured_at_ms: candidate.captured_at_ms,
+        };
+        if should_merge(incoming, candidate_record, 0.0).is_some() {
+            let merged = merge_story_text(&candidate.text, &text, 6_400);
+            if store.merge_pending_capture(&candidate, &record, &merged)? {
+                return Ok(PersistCaptureOutcome::Merged {
+                    record_id: candidate.record_id,
+                    redaction_count,
+                });
+            }
+        }
+    }
+
+    store.insert_capture(
+        &record,
+        &[NewChunk {
+            id: capture.chunk_id.to_owned(),
+            ord: 0,
+            text,
+        }],
+    )?;
+
+    Ok(PersistCaptureOutcome::Stored {
+        record_id: capture.record_id.to_owned(),
+        redaction_count,
+    })
+}
+
+fn safety_context<'a>(
+    capture: CaptureForPersistence<'a>,
+    ocr_text: Option<&'a str>,
+) -> SafetyContext<'a> {
+    SafetyContext {
+        app_name: Some(capture.app_name),
+        bundle_id: capture.bundle_id,
+        url: capture.url,
+        window_title: Some(capture.window_title),
+        ocr_text,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn capture<'a>(
+        app_name: &'a str,
+        url: Option<&'a str>,
+        ocr_text: &'a str,
+    ) -> CaptureForPersistence<'a> {
+        CaptureForPersistence {
+            record_id: "record-1",
+            session_id: "session-1",
+            chunk_id: "chunk-1",
+            source: "screen",
+            app_name,
+            bundle_id: Some("com.example.app"),
+            url,
+            window_title: "Project notes",
+            ocr_text,
+            captured_at_ms: 1_000,
+            created_at_ms: 1_000,
+        }
+    }
+
+    #[test]
+    fn allowed_capture_becomes_one_pending_chunk() {
+        let mut store = Store::open_in_memory().unwrap();
+        let outcome = persist_capture(
+            &mut store,
+            capture(
+                "VS Code",
+                Some("https://docs.example.com/fndr"),
+                "alpha notes",
+            ),
+            &Blocklist::default(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            outcome,
+            PersistCaptureOutcome::Stored {
+                record_id: "record-1".to_owned(),
+                redaction_count: 0,
+            }
+        );
+        let pending = store.pending_chunks(10).unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].record_id, "record-1");
+        assert_eq!(pending[0].text, "alpha notes");
+        assert_eq!(
+            store.capture_metadata("record-1").unwrap(),
+            Some(fndr_store::CaptureMetadata {
+                bundle_id: Some("com.example.app".into()),
+                url: Some("https://docs.example.com/fndr".into()),
+            })
+        );
+    }
+
+    #[test]
+    fn secret_text_is_redacted_before_the_real_store_write() {
+        let mut store = Store::open_in_memory().unwrap();
+        let secret = "notes\napi_key: do-not-store-me\nnext task";
+        let outcome = persist_capture(
+            &mut store,
+            capture("VS Code", Some("https://docs.example.com/fndr"), secret),
+            &Blocklist::default(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            outcome,
+            PersistCaptureOutcome::Stored {
+                record_id: "record-1".to_owned(),
+                redaction_count: 1,
+            }
+        );
+        let stored = &store.pending_chunks(10).unwrap()[0].text;
+        assert!(!stored.contains("do-not-store-me"));
+        assert_eq!(stored, "notes\n[REDACTED: secret pattern]\nnext task");
+    }
+
+    #[test]
+    fn sensitive_metadata_never_reaches_the_real_store_write() {
+        let mut store = Store::open_in_memory().unwrap();
+        let outcome = persist_capture(
+            &mut store,
+            capture("1Password", None, "password vault contents"),
+            &Blocklist::default(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            outcome,
+            PersistCaptureOutcome::Skipped {
+                reason: SafetyReason::PasswordManager,
+            }
+        );
+        assert!(store.pending_chunks(10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn owner_domain_blocklist_prevents_the_real_store_write() {
+        let mut store = Store::open_in_memory().unwrap();
+        let blocklist = Blocklist::new::<&str>(&[], &["example.com"]);
+        let outcome = persist_capture(
+            &mut store,
+            capture(
+                "Browser",
+                Some("https://docs.example.com/fndr"),
+                "private plan",
+            ),
+            &blocklist,
+        )
+        .unwrap();
+
+        assert_eq!(
+            outcome,
+            PersistCaptureOutcome::Skipped {
+                reason: SafetyReason::UserBlocklist,
+            }
+        );
+        assert!(store.pending_chunks(10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn write_path_never_persists_browser_url_query_or_fragment() {
+        let mut store = Store::open_in_memory().unwrap();
+        persist_capture(
+            &mut store,
+            capture(
+                "Safari",
+                Some("https://docs.example.com/fndr?token=secret#private"),
+                "normal note",
+            ),
+            &Blocklist::default(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            store.capture_metadata("record-1").unwrap(),
+            Some(fndr_store::CaptureMetadata {
+                bundle_id: Some("com.example.app".into()),
+                url: Some("https://docs.example.com/fndr".into()),
+            })
+        );
+    }
+
+    #[test]
+    fn same_scheduler_burst_merges_before_lance_can_observe_two_rows() {
+        let mut store = Store::open_in_memory().unwrap();
+        let first = CaptureForPersistence {
+            record_id: "record-1",
+            session_id: "session-1",
+            chunk_id: "chunk-1",
+            source: "screen",
+            app_name: "VS Code",
+            bundle_id: Some("com.microsoft.VSCode"),
+            url: Some("https://docs.example.com/fndr"),
+            window_title: "FNDR continuity design",
+            ocr_text: "Implementing the durable continuity policy and capture merge boundary.",
+            captured_at_ms: 1_000,
+            created_at_ms: 1_000,
+        };
+        let second = CaptureForPersistence {
+            record_id: "record-2",
+            chunk_id: "chunk-2",
+            ocr_text: "Implementing the durable continuity policy and atomic capture merge boundary.",
+            captured_at_ms: 2_000,
+            created_at_ms: 2_000,
+            ..first
+        };
+        assert!(matches!(
+            persist_capture(&mut store, first, &Blocklist::default()).unwrap(),
+            PersistCaptureOutcome::Stored { .. }
+        ));
+        assert_eq!(
+            persist_capture(&mut store, second, &Blocklist::default()).unwrap(),
+            PersistCaptureOutcome::Merged {
+                record_id: "record-1".into(),
+                redaction_count: 0,
+            }
+        );
+        let pending = store.pending_chunks(10).unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].record_id, "record-1");
+        assert!(pending[0].text.contains("atomic capture merge boundary"));
+        assert_eq!(store.search_chunks("atomic", 10).unwrap().len(), 1);
+    }
+}
