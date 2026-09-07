@@ -13,12 +13,19 @@ use fndr_store::Store;
 struct LaunchOptions {
     store_path: PathBuf,
     port: u16,
+    /// When given together with index_dir, fndr.search also queries the
+    /// real vector route. Absent by default: an alpha demo host with no
+    /// model still serves keyword search exactly as before.
+    model_path: Option<PathBuf>,
+    index_dir: Option<PathBuf>,
 }
 
 impl LaunchOptions {
     fn parse(args: impl IntoIterator<Item = String>) -> Result<Self, String> {
         let mut store_path = None;
         let mut port = 0;
+        let mut model_path = None;
+        let mut index_dir = None;
         let mut args = args.into_iter();
 
         while let Some(arg) = args.next() {
@@ -37,18 +44,38 @@ impl LaunchOptions {
                         .parse::<u16>()
                         .map_err(|_| "--port must be between 0 and 65535".to_owned())?;
                 }
+                "--model" => {
+                    let value = args
+                        .next()
+                        .ok_or_else(|| "--model requires a path".to_owned())?;
+                    model_path = Some(PathBuf::from(value));
+                }
+                "--index-dir" => {
+                    let value = args
+                        .next()
+                        .ok_or_else(|| "--index-dir requires a path".to_owned())?;
+                    index_dir = Some(PathBuf::from(value));
+                }
                 "--help" | "-h" => return Err(String::new()),
                 other => return Err(format!("unknown option: {other}")),
             }
         }
 
         let store_path = store_path.ok_or_else(|| "--store is required".to_owned())?;
-        Ok(Self { store_path, port })
+        if model_path.is_some() != index_dir.is_some() {
+            return Err("--model and --index-dir must be given together".to_owned());
+        }
+        Ok(Self {
+            store_path,
+            port,
+            model_path,
+            index_dir,
+        })
     }
 }
 
 fn print_usage() {
-    eprintln!("usage: fndr-mcp --store PATH [--port PORT]");
+    eprintln!("usage: fndr-mcp --store PATH [--port PORT] [--model PATH --index-dir PATH]");
 }
 
 fn main() {
@@ -66,11 +93,35 @@ fn main() {
         );
         std::process::exit(1);
     });
+
+    let server = match (options.model_path, options.index_dir) {
+        (Some(model_path), Some(index_dir)) => {
+            let spec = fndr_inference::CHUNK_EMBEDDING_V1;
+            let embedder =
+                fndr_inference::GgufEmbedder::load(&model_path, spec).unwrap_or_else(|error| {
+                    eprintln!("FNDR MCP could not load {}: {error}", model_path.display());
+                    std::process::exit(1);
+                });
+            println!("Vector route enabled: {}", model_path.display());
+            FndrMcpServer::with_vector_route(
+                store,
+                fndr_privacy::Blocklist::default(),
+                std::sync::Arc::new(embedder),
+                index_dir,
+            )
+        }
+        (None, None) => {
+            println!("Vector route disabled (no --model given); fndr.search is keyword-only.");
+            FndrMcpServer::new(store)
+        }
+        _ => unreachable!("LaunchOptions::parse already rejected a partial pair"),
+    };
+
     let token = generate_token();
     let runtime = tokio::runtime::Runtime::new().expect("Tokio runtime must initialize");
 
     runtime.block_on(async move {
-        let (addr, handle) = serve_loopback(FndrMcpServer::new(store), token.clone(), options.port)
+        let (addr, handle) = serve_loopback(server, token.clone(), options.port)
             .await
             .unwrap_or_else(|error| {
                 eprintln!("FNDR MCP could not bind: {error}");
@@ -103,6 +154,8 @@ mod tests {
             Ok(LaunchOptions {
                 store_path: PathBuf::from("/tmp/fndr.sqlite3"),
                 port: 4711,
+                model_path: None,
+                index_dir: None,
             })
         );
     }
@@ -118,6 +171,47 @@ mod tests {
                 ["--store", "memory.sqlite3", "--port", "nope"].map(str::to_owned)
             ),
             Err("--port must be between 0 and 65535".into())
+        );
+    }
+
+    #[test]
+    fn parses_optional_model_and_index_dir() {
+        assert_eq!(
+            LaunchOptions::parse(
+                [
+                    "--store",
+                    "/tmp/fndr.sqlite3",
+                    "--model",
+                    "/tmp/model.gguf",
+                    "--index-dir",
+                    "/tmp/index",
+                ]
+                .map(str::to_owned)
+            ),
+            Ok(LaunchOptions {
+                store_path: PathBuf::from("/tmp/fndr.sqlite3"),
+                port: 0,
+                model_path: Some(PathBuf::from("/tmp/model.gguf")),
+                index_dir: Some(PathBuf::from("/tmp/index")),
+            })
+        );
+    }
+
+    #[test]
+    fn model_and_index_dir_default_to_none() {
+        let opts =
+            LaunchOptions::parse(["--store", "/tmp/fndr.sqlite3"].map(str::to_owned)).unwrap();
+        assert_eq!(opts.model_path, None);
+        assert_eq!(opts.index_dir, None);
+    }
+
+    #[test]
+    fn model_without_index_dir_is_rejected() {
+        assert_eq!(
+            LaunchOptions::parse(
+                ["--store", "/tmp/fndr.sqlite3", "--model", "/tmp/model.gguf"].map(str::to_owned)
+            ),
+            Err("--model and --index-dir must be given together".to_owned())
         );
     }
 }
