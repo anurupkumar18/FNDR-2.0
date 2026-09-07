@@ -7,12 +7,15 @@
 //! Never a mock: this measures the same store search the fndr.search tool
 //! serves.
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 
-use fndr_store::SkeletonStore;
+use fndr_inference::Embedder;
+use fndr_retrieval::{VectorRetriever, VectorSearchError};
+use fndr_store::{FlushError, LanceWriter, NewChunk, NewRecord, SkeletonStore, Store};
 
 #[derive(Debug, thiserror::Error)]
 pub enum BenchError {
@@ -26,6 +29,10 @@ pub enum BenchError {
     },
     #[error("store: {0}")]
     Store(#[from] fndr_store::StoreError),
+    #[error("vector index flush: {0}")]
+    Flush(#[from] FlushError),
+    #[error("vector search: {0}")]
+    Vector(#[from] VectorSearchError),
     #[error("corpus is empty or missing queries")]
     EmptyCorpus,
 }
@@ -172,6 +179,84 @@ pub fn run_fts_baseline(corpus: &Corpus) -> Result<BenchReport, BenchError> {
     latencies.sort_by(|a, b| a.partial_cmp(b).expect("finite latencies"));
     Ok(BenchReport {
         route: "fts_baseline".to_string(),
+        corpus: corpus.name.clone(),
+        n_records: corpus.records.len(),
+        n_queries: per_query.len(),
+        recall_at_5: per_query.iter().map(|q| q.recall_at_5).sum::<f64>() / n,
+        mrr_at_10: per_query
+            .iter()
+            .map(|q| q.reciprocal_rank_at_10)
+            .sum::<f64>()
+            / n,
+        latency_ms_p50: percentile(&latencies, 0.5),
+        latency_ms_p95: percentile(&latencies, 0.95),
+        per_query,
+    })
+}
+
+/// Run the real embedding contract against the same chunk-shaped corpus, then
+/// query the Lance derivative. The caller supplies an empty disposable work
+/// directory; this routine never touches a user's FNDR vault or the FTS
+/// baseline. It is intentionally not part of `make bench` until a committed
+/// vector baseline is reviewed under ADR-006's real-model gate.
+pub async fn run_vector_baseline(
+    corpus: &Corpus,
+    work_dir: &Path,
+    embedder: &dyn Embedder,
+) -> Result<BenchReport, BenchError> {
+    let mut store = Store::open(&work_dir.join("bench.sqlite3"))?;
+    let mut record_ids = HashMap::new();
+    for record in &corpus.records {
+        let record_id = format!("bench-{}", record.id);
+        let chunk_id = format!("chunk-{}", record.id);
+        store.insert_capture(
+            &NewRecord {
+                id: record_id.clone(),
+                session_id: "bench".into(),
+                source: record.source.clone(),
+                app_name: "FNDR-Bench".into(),
+                bundle_id: None,
+                url: None,
+                window_title: "synthetic corpus".into(),
+                captured_at_ms: record.captured_at_ms,
+                created_at_ms: record.captured_at_ms,
+            },
+            &[NewChunk {
+                id: chunk_id,
+                ord: 0,
+                text: record.text.clone(),
+            }],
+        )?;
+        record_ids.insert(record_id, record.id);
+    }
+    let writer = LanceWriter::new(&work_dir.join("index"));
+    loop {
+        if writer.flush_once(&mut store, embedder, 0).await?.written == 0 {
+            break;
+        }
+    }
+    let retriever = VectorRetriever::new(work_dir.join("index"));
+    let mut per_query = Vec::with_capacity(corpus.queries.len());
+    let mut latencies = Vec::with_capacity(corpus.queries.len());
+    for query in &corpus.queries {
+        let started = Instant::now();
+        let hits = retriever.search(&query.query, 10, embedder).await?;
+        latencies.push(started.elapsed().as_secs_f64() * 1000.0);
+        let ranked = hits
+            .iter()
+            .filter_map(|hit| record_ids.get(&hit.record_id).copied())
+            .collect::<Vec<_>>();
+        per_query.push(PerQuery {
+            query: query.query.clone(),
+            recall_at_5: recall_at_k(&ranked, &query.relevant, 5),
+            reciprocal_rank_at_10: reciprocal_rank_at_k(&ranked, &query.relevant, 10),
+            returned: ranked.len(),
+        });
+    }
+    let n = per_query.len() as f64;
+    latencies.sort_by(|a, b| a.partial_cmp(b).expect("finite latencies"));
+    Ok(BenchReport {
+        route: "vector_baseline".into(),
         corpus: corpus.name.clone(),
         n_records: corpus.records.len(),
         n_queries: per_query.len(),
