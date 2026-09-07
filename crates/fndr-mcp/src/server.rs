@@ -1,6 +1,8 @@
-//! The MCP surface (ADR-007). Nine of the 14 founding tools are wired:
+//! The MCP surface (ADR-007). Ten of the 14 founding tools are wired:
 //! `fndr.search` (over `fndr-retrieval::KeywordRetriever`, not ADR-007's full
-//! hybrid/filtered contract yet), `fndr.privacy_status`, `fndr.timeline`
+//! hybrid/filtered contract yet), `fndr.context_pack` (budgeted, cited
+//! capture text over that same keyword route), `fndr.privacy_status`,
+//! `fndr.timeline`
 //! and `fndr.delta` (both counts only, never capture text),
 //! `fndr.active_focus` (newest capture plus its age and a typed staleness
 //! status), `fndr.source_evidence`
@@ -152,6 +154,51 @@ pub struct SourceEvidenceOutput {
     /// Echoes whether raw text was included, so a caller never has to infer
     /// the gate's state from an absent field.
     pub raw_included: bool,
+}
+
+/// Characters per estimated token. FNDR has no tokenizer on this path and
+/// loading one to budget a text pack would be absurd, so the budget is an
+/// honest estimate and every field carrying it says `estimated`.
+const CHARS_PER_ESTIMATED_TOKEN: usize = 4;
+
+#[derive(Debug, Deserialize, schemars::JsonSchema, Default)]
+pub struct ContextPackParams {
+    /// What the caller is trying to do. Used as the retrieval query.
+    pub goal: String,
+    /// Approximate token ceiling for the packed text (default 2000, capped
+    /// at 8000). Estimated, not tokenizer-exact; see `estimated_tokens_used`.
+    pub token_budget: Option<u32>,
+    /// Maximum records considered before budgeting (default 20, capped 100).
+    pub max_records: Option<u32>,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct PackedEvidence {
+    pub record_id: String,
+    pub chunk_id: String,
+    pub app_name: String,
+    pub window_title: String,
+    pub url: Option<String>,
+    pub captured_at_ms: f64,
+    /// The stored capture text. A context pack exists to carry this; see
+    /// the tool's note about auditing it as a raw release.
+    pub text: String,
+    pub estimated_tokens: u32,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct ContextPackOutput {
+    pub goal: String,
+    /// Which retrieval route produced this. Today only `keyword`: there is
+    /// no vector or hybrid route yet, and a pack that hid that would let a
+    /// caller assume semantic recall it did not get.
+    pub retrieval_route: String,
+    pub token_budget: u32,
+    pub estimated_tokens_used: u32,
+    pub items: Vec<PackedEvidence>,
+    /// Records that matched but did not fit the budget, so a thin pack is
+    /// never mistaken for a thin memory.
+    pub dropped_for_budget: u32,
 }
 
 /// How old the newest capture may be before `fndr.active_focus` stops
@@ -546,6 +593,92 @@ impl FndrMcpServer {
                 })
                 .collect(),
             raw_included: include_raw,
+        }))
+    }
+
+    #[tool(
+        name = "fndr.context_pack",
+        description = "Budgeted, cited context for a goal. Returns stored capture text with a citation on every item, packed until an estimated token budget is spent. Audited as a raw-text release, because that is what it is."
+    )]
+    pub fn context_pack(
+        &self,
+        Parameters(params): Parameters<ContextPackParams>,
+    ) -> Result<Json<ContextPackOutput>, ErrorData> {
+        // A context pack's whole purpose is carrying capture text, so it is
+        // always a raw release. `source_evidence` gates that behind
+        // include_raw; this tool cannot, so the audit log must say so on
+        // every call rather than only when someone opts in.
+        let raw_released = true;
+        let result = self.context_pack_inner(Parameters(params));
+        self.audit("fndr.context_pack", raw_released, result)
+    }
+
+    fn context_pack_inner(
+        &self,
+        Parameters(ContextPackParams {
+            goal,
+            token_budget,
+            max_records,
+        }): Parameters<ContextPackParams>,
+    ) -> Result<Json<ContextPackOutput>, ErrorData> {
+        if goal.trim().is_empty() {
+            return Err(ErrorData::invalid_params("goal must not be empty", None));
+        }
+        let token_budget = token_budget.unwrap_or(2_000).min(8_000);
+        let max_records = max_records.unwrap_or(20).min(100) as usize;
+        let budget_chars = token_budget as usize * CHARS_PER_ESTIMATED_TOKEN;
+
+        let store = self
+            .store
+            .lock()
+            .map_err(|_| ErrorData::internal_error("store lock poisoned", None))?;
+        let hits = KeywordRetriever::new(&store)
+            .search(&goal, max_records)
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+        let mut items = Vec::new();
+        let mut used_chars = 0usize;
+        let mut dropped_for_budget = 0u32;
+        for hit in hits {
+            let Some(evidence) = store
+                .record_evidence(&hit.record_id)
+                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?
+            else {
+                // Deleted between retrieval and packing; a citation to a
+                // record that no longer exists must not reach the caller.
+                continue;
+            };
+            let Some(chunk) = evidence
+                .chunks
+                .into_iter()
+                .find(|chunk| chunk.chunk_id == hit.chunk_id)
+            else {
+                continue;
+            };
+            if used_chars + chunk.text.len() > budget_chars {
+                dropped_for_budget += 1;
+                continue;
+            }
+            used_chars += chunk.text.len();
+            items.push(PackedEvidence {
+                record_id: evidence.record_id,
+                chunk_id: chunk.chunk_id,
+                app_name: evidence.app_name,
+                window_title: evidence.window_title,
+                url: evidence.url,
+                captured_at_ms: evidence.captured_at_ms as f64,
+                estimated_tokens: chunk.text.len().div_ceil(CHARS_PER_ESTIMATED_TOKEN) as u32,
+                text: chunk.text,
+            });
+        }
+
+        Ok(Json(ContextPackOutput {
+            goal,
+            retrieval_route: "keyword".to_owned(),
+            token_budget,
+            estimated_tokens_used: used_chars.div_ceil(CHARS_PER_ESTIMATED_TOKEN) as u32,
+            items,
+            dropped_for_budget,
         }))
     }
 

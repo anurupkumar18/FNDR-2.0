@@ -6,9 +6,9 @@ use std::collections::BTreeSet;
 
 use fndr_capture::{FrameSource, PngFileSource};
 use fndr_mcp::{
-    ActiveFocusParams, DeltaParams, FndrMcpServer, OpenTargetParams, PrivacyStatusParams,
-    RecallKind, RecallParams, RememberDecisionParams, SearchParams, SourceEvidenceParams,
-    TimelineGrain, TimelineParams,
+    ActiveFocusParams, ContextPackParams, DeltaParams, FndrMcpServer, OpenTargetParams,
+    PrivacyStatusParams, RecallKind, RecallParams, RememberDecisionParams, SearchParams,
+    SourceEvidenceParams, TimelineGrain, TimelineParams,
 };
 use fndr_ocr::OcrEngine;
 use fndr_privacy::Blocklist;
@@ -231,6 +231,76 @@ fn remember_decision_appends_and_rejects_an_empty_statement() {
         decided_at_ms: None,
     }));
     assert!(rejected.is_err(), "an empty statement must not be recorded");
+}
+
+#[test]
+fn context_pack_cites_every_item_and_is_audited_as_a_raw_release() {
+    let text = "the migration runner reads a const array of migrations";
+    let server = FndrMcpServer::new(store_with_one_record(text));
+
+    let pack = server
+        .context_pack(Parameters(ContextPackParams {
+            goal: "migration runner".into(),
+            token_budget: None,
+            max_records: None,
+        }))
+        .expect("tool call")
+        .0;
+
+    assert_eq!(pack.retrieval_route, "keyword");
+    assert_eq!(pack.items.len(), 1);
+    let item = &pack.items[0];
+    assert_eq!(item.text, text, "the pack carries the capture text");
+    assert_eq!(item.record_id, "r1", "every item cites its record");
+    assert_eq!(item.chunk_id, "c1", "and its chunk");
+    assert_eq!(item.app_name, "Safari");
+    assert!(pack.estimated_tokens_used > 0);
+    assert_eq!(pack.dropped_for_budget, 0);
+
+    let released = server
+        .recent_tool_calls(10)
+        .expect("audit readable")
+        .into_iter()
+        .find(|entry| entry.tool == "fndr.context_pack")
+        .expect("context_pack is audited");
+    assert!(
+        released.raw_released,
+        "a context pack always carries capture text, so it is always a raw release"
+    );
+}
+
+#[test]
+fn context_pack_reports_what_the_budget_dropped() {
+    let text = "the migration runner reads a const array of migrations";
+    let server = FndrMcpServer::new(store_with_one_record(text));
+
+    // A budget of one estimated token cannot fit the chunk.
+    let pack = server
+        .context_pack(Parameters(ContextPackParams {
+            goal: "migration runner".into(),
+            token_budget: Some(1),
+            max_records: None,
+        }))
+        .expect("tool call")
+        .0;
+
+    assert!(pack.items.is_empty());
+    assert_eq!(
+        pack.dropped_for_budget, 1,
+        "a thin pack must not look like a thin memory"
+    );
+    assert_eq!(pack.estimated_tokens_used, 0);
+}
+
+#[test]
+fn context_pack_refuses_an_empty_goal() {
+    let server = FndrMcpServer::new(store_with_one_record("body"));
+    let result = server.context_pack(Parameters(ContextPackParams {
+        goal: "  ".into(),
+        token_budget: None,
+        max_records: None,
+    }));
+    assert!(result.is_err());
 }
 
 #[test]
@@ -462,6 +532,11 @@ fn every_registered_tool_writes_an_audit_entry() {
     }));
     let _ = server.active_focus(Parameters(ActiveFocusParams {
         stale_after_ms: None,
+    }));
+    let _ = server.context_pack(Parameters(ContextPackParams {
+        goal: "body".into(),
+        token_budget: None,
+        max_records: None,
     }));
     let _ = server.source_evidence(Parameters(SourceEvidenceParams {
         record_id: "r1".into(),

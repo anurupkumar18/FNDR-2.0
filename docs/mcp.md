@@ -5,7 +5,7 @@ The canonical tool set and its rationale live in
 P1 additions). This document is the per-tool contract for tools that are
 actually implemented; it grows one entry per tool as each lands, per
 ADR-007's tool-addition rule (use case, schema round-trip test,
-auth-failure test, rate limit, docs entry). Nine of the fourteen are
+auth-failure test, rate limit, docs entry). Ten of the fourteen are
 implemented today.
 
 Transport, auth, and posture (bearer token, Origin/Host allowlist, rate
@@ -52,6 +52,33 @@ surfacing reasons yet).
 **Result:** `{ hits: [{ record_id, chunk_id, source, captured_at_ms, snippet }] }`.
 `record_id`/`chunk_id` are the durable, stable IDs also used by deletion and
 future evidence/citation tools.
+
+### `fndr.context_pack`
+
+Budgeted, cited context for a goal. Runs the keyword route, then packs
+stored capture text until an estimated token budget is spent, with a
+citation on every item.
+
+**Params:** `{ goal: string, token_budget?: number, max_records?: number }`.
+`token_budget` defaults to 2000 (capped 8000), `max_records` to 20 (capped
+100). An empty `goal` is a typed refusal.
+
+**Result:** `{ goal, retrieval_route, token_budget, estimated_tokens_used, dropped_for_budget, items: [{ record_id, chunk_id, app_name, window_title, url?, captured_at_ms, text, estimated_tokens }] }`.
+
+Three fields exist to stop a caller over-reading the result:
+
+- `retrieval_route` is `keyword` — there is no vector or hybrid route yet,
+  and a pack that hid that would let a caller assume semantic recall it did
+  not get.
+- `estimated_tokens_used` is an estimate at four characters per token.
+  FNDR has no tokenizer on this path, so the number is honest about being
+  approximate rather than pretending to be exact.
+- `dropped_for_budget` counts records that matched but did not fit, so a
+  thin pack is never mistaken for a thin memory.
+
+Unlike `fndr.source_evidence`, this tool has no `include_raw` gate: carrying
+capture text is its entire purpose. It is therefore recorded in the audit
+log as a raw release on **every** call.
 
 ### `fndr.privacy_status`
 
@@ -185,7 +212,7 @@ touches ranking.
 
 ## Not yet implemented
 
-`fndr.context_pack`, `fndr.project_context`, `fndr.graph_context`,
+`fndr.project_context`, `fndr.graph_context`,
 `fndr.explain_retrieval`, `fndr.feedback`, and the
 ratified P1 additions `fndr.answer` and `fndr.session_story`. See ADR-007
 for each tool's purpose and the Connected Planner amendment for
