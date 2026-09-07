@@ -422,15 +422,20 @@ impl Store {
              LIMIT ?2",
         )?;
         statement
-            .query_map((query, (limit as i64).min(SEARCH_LIMIT_CAP)), |row| {
-                Ok(ChunkSearchHit {
-                    chunk_id: row.get(0)?,
-                    record_id: row.get(1)?,
-                    source: row.get(2)?,
-                    captured_at_ms: row.get(3)?,
-                    snippet: row.get(4)?,
-                })
-            })?
+            // Clamp before the cast, never after: a usize past i64::MAX
+            // casts to -1, and SQLite reads LIMIT -1 as no limit at all.
+            .query_map(
+                (query, limit.min(SEARCH_LIMIT_CAP as usize) as i64),
+                |row| {
+                    Ok(ChunkSearchHit {
+                        chunk_id: row.get(0)?,
+                        record_id: row.get(1)?,
+                        source: row.get(2)?,
+                        captured_at_ms: row.get(3)?,
+                        snippet: row.get(4)?,
+                    })
+                },
+            )?
             .collect::<Result<Vec<_>, _>>()
             .map_err(StoreError::from)
     }
@@ -1241,6 +1246,43 @@ mod tests {
     fn record_evidence_for_an_unknown_record_is_none_not_an_error() {
         let store = Store::open_in_memory().unwrap();
         assert!(store.record_evidence("missing").unwrap().is_none());
+    }
+
+    #[test]
+    fn an_absurd_limit_still_clamps_to_the_cap() {
+        let mut store = Store::open_in_memory().unwrap();
+        // More rows than the cap, so an unclamped limit is distinguishable
+        // from a clamped one. With only a handful this test would pass
+        // against the bug it exists to catch.
+        let rows = SEARCH_LIMIT_CAP + 5;
+        for index in 0..rows {
+            store
+                .insert_capture(
+                    &NewRecord {
+                        id: format!("r{index}"),
+                        session_id: "s1".into(),
+                        source: "screen".into(),
+                        app_name: "Terminal".into(),
+                        bundle_id: None,
+                        url: None,
+                        window_title: "notes".into(),
+                        captured_at_ms: 1_000 + index,
+                        created_at_ms: 1_000 + index,
+                    },
+                    &[NewChunk {
+                        id: format!("c{index}"),
+                        ord: 0,
+                        text: "shared searchable token".into(),
+                    }],
+                )
+                .unwrap();
+        }
+
+        // usize::MAX casts to -1 as i64, and SQLite reads LIMIT -1 as no
+        // limit, so the clamp has to happen before the cast. Unclamped this
+        // returns every row; clamped it returns the cap.
+        let hits = store.search_chunks("searchable", usize::MAX).unwrap();
+        assert_eq!(hits.len(), SEARCH_LIMIT_CAP as usize);
     }
 
     #[test]

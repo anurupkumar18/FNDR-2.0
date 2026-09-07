@@ -151,6 +151,14 @@ rather than silently carried:
    `fndr.delta` take explicit unix-ms bounds. The shared parser is deferred
    until a second tool needs it rather than built speculatively for one.
 
+**"The only write tool" needs a qualifier.** The table calls
+`fndr.remember_decision` that, and the phrase predates two things that now
+also write: `fndr.feedback` records a rating in `result_feedback`, and every
+tool call writes an `mcp_audit` row. Both write to operational tables, never
+to memory. The distinction the table was drawing still holds, stated
+precisely: `fndr.remember_decision` is the only tool that adds to what FNDR
+remembers. `docs/mcp.md` and the tool's own description now say it that way.
+
 Two implemented tools are narrower than their table entry: `fndr.search` is
 a plain FTS5 keyword route with no hybrid ranking, filters, or surfacing
 reasons, and `fndr.recall` backs only its `decision` kind, refusing

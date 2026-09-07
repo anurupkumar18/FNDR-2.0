@@ -244,9 +244,15 @@ history.
 
 ### `fndr.remember_decision`
 
-The only write tool. Appends one row to `fndr-store::Store`'s append-only
-`decision_ledger` table; never edits or removes a prior entry, and never
-touches ranking.
+The only tool that writes to the memory domain. Appends one row to
+`fndr-store::Store`'s append-only `decision_ledger` table; never edits or
+removes a prior entry, and never touches ranking.
+
+ADR-007's table calls this "the only write tool". That phrase predates
+`fndr.feedback` and the audit log, both of which also write — to their own
+operational tables (`result_feedback`, `mcp_audit`), never to memory. The
+distinction that matters is the one ADR-007 was drawing: no tool but this
+one adds to what FNDR remembers.
 
 **Params:** `{ statement: string, record_id?: string, decided_at_ms?: number }`.
 `decided_at_ms` defaults to the current time. An empty or whitespace-only

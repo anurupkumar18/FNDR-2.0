@@ -12,7 +12,8 @@
 //! answered empty), `fndr.explain_retrieval` (what the index made of a
 //! query, including what it structurally cannot tell you),
 //! `fndr.feedback` (recorded, and the response states
-//! that ranking did not change), and `fndr.remember_decision` (the only write tool: appends to
+//! that ranking did not change), and `fndr.remember_decision` (the only tool
+//! that writes to the memory domain: appends to
 //! `fndr-store::Store::remember_decision`'s append-only ledger, never edits
 //! or removes). `fndr-store::Store` replaced the walking-skeleton
 //! `SkeletonStore` stand-in as of T-702.
@@ -422,10 +423,11 @@ impl FndrMcpServer {
     /// result through here, so no return path can skip the audit log: the
     /// wrappers exist for that reason and not for style.
     ///
-    /// A failed audit write fails the call. For `fndr.remember_decision`
-    /// that means an appended decision can be reported as an error, and a
-    /// retry appends a second entry. That is deliberate: a duplicate ledger
-    /// row is visible to its owner and an unaudited write is not.
+    /// A failed audit write fails the call. For the two tools that persist
+    /// something first — `fndr.remember_decision` and `fndr.feedback` — that
+    /// means a successful write can be reported as an error, and a retry
+    /// appends a second row. That is deliberate: a duplicate row is visible
+    /// to its owner and an unaudited write is not.
     /// Every tool name this server actually exposes, read from the router
     /// rather than a hand-maintained list, so callers (and the audit
     /// coverage test) cannot drift from the real surface.
@@ -1098,7 +1100,7 @@ impl FndrMcpServer {
 
     #[tool(
         name = "fndr.remember_decision",
-        description = "The only write tool: appends one entry to the local, append-only decision ledger. Never edits or removes prior entries and never mutates ranking."
+        description = "The only tool that writes to the memory domain: appends one entry to the local, append-only decision ledger. Never edits or removes prior entries and never mutates ranking."
     )]
     pub fn remember_decision(
         &self,

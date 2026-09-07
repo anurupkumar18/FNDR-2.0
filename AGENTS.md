@@ -403,6 +403,20 @@ Rule: when adding a heavy dependency, say so in the PR body, expect the
 first run to bust the budget once, and verify the cached follow-up run
 returns under it.
 
+## 2026-09-06 · Clamp before casting, and prove the test can fail
+Cost: a self-review catch, not a production bug — but only because the
+review happened. Extracting a `50` literal into a named `SEARCH_LIMIT_CAP`
+turned `limit.min(50) as i64` into `(limit as i64).min(CAP)`. A `usize`
+above `i64::MAX` casts to `-1`, and SQLite reads `LIMIT -1` as *no limit*,
+so the "safety" cap silently became unbounded.
+Root cause: reordering a clamp and a cast looks like a formatting change and
+is a semantic one. The first regression test written for it also passed
+against the bug, because the fixture held fewer rows than the cap.
+Rule: clamp in the target domain before casting (`limit.min(CAP as usize) as
+i64`). And when a test exists to catch a specific regression, reintroduce
+the bug once and watch it fail — a test whose fixture is too small to
+distinguish the two behaviors is theater.
+
 ## 2026-09-06 · `make test | tail` reports the pipe's exit code, not make's
 Cost: a full gate re-run, and a few minutes believing a green gate that had
 not been verified.
