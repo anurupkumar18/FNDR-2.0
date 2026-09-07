@@ -121,3 +121,28 @@ one process; pair it with a process-wide `AtomicU64` counter (or a crate
 like `tempfile` that guarantees this). A flaky failure that reproduces at a
 different assertion/line on retry, in a file the current diff never touched,
 is a signal to check test isolation before assuming the diff is at fault.
+
+## 2026-09-06 · A Tauri app binary needs its build context and icon from day one
+Cost: several compile cycles while turning a library-only shell into a runnable
+desktop host.
+Root cause: `tauri::generate_context!` needs a build-script `OUT_DIR`, while
+`tauri::tauri_build_context!` needs `tauri-build` code generation explicitly
+enabled; the generated desktop context also requires a real PNG icon even when
+the first host creates no window.
+Rule: when adding the first runnable Tauri binary, add the pinned
+`tauri-build` build dependency, `build.rs` with `CodegenContext`,
+`tauri.conf.json`, and the product icon in the same slice; compile the binary
+as part of the focused gate before claiming the shell is runnable.
+
+## 2026-09-06 · `target/` grew to 72 GiB and nearly exhausted the disk
+Cost: a session paused at the demo-readiness gate because the machine had 4
+GiB free, blocking any further native build or the human rehearsal.
+Root cause: repeated full-workspace `CARGO_BUILD_JOBS=1` rebuilds (forced by
+low-memory/low-core gates) plus multiple binaries (shell, sidecar, mcp, bench)
+each accumulate their own incremental artifacts under `target/debug`; nothing
+in this repo ever pruned it, so it grew unbounded across sessions.
+Rule: check `du -sh target` before starting a build-heavy session; run `make
+clean` (now wraps `cargo clean`) when it passes a few GiB, since debug build
+output is fully regenerable and never worth protecting. Don't let a low-disk
+warning block work silently -- surface it and clean instead of routing around
+it with partial builds.
