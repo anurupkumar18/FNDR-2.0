@@ -1,4 +1,4 @@
-//! The MCP surface (ADR-007). Eleven of the 14 founding tools are wired:
+//! The MCP surface (ADR-007). Twelve of the 14 founding tools are wired:
 //! `fndr.search` (over `fndr-retrieval::KeywordRetriever`, not ADR-007's full
 //! hybrid/filtered contract yet), `fndr.context_pack` (budgeted, cited
 //! capture text over that same keyword route), `fndr.privacy_status`,
@@ -9,7 +9,9 @@
 //! (capture text behind an explicit `include_raw` gate that defaults
 //! closed), `fndr.open_target` (sanitized URL or app, else an explicit
 //! unavailable state), `fndr.recall` (decisions only; unbacked kinds are refused, not
-//! answered empty), `fndr.feedback` (recorded, and the response states
+//! answered empty), `fndr.explain_retrieval` (what the index made of a
+//! query, including what it structurally cannot tell you),
+//! `fndr.feedback` (recorded, and the response states
 //! that ranking did not change), and `fndr.remember_decision` (the only write tool: appends to
 //! `fndr-store::Store::remember_decision`'s append-only ledger, never edits
 //! or removes). `fndr-store::Store` replaced the walking-skeleton
@@ -155,6 +157,36 @@ pub struct SourceEvidenceOutput {
     /// Echoes whether raw text was included, so a caller never has to infer
     /// the gate's state from an absent field.
     pub raw_included: bool,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema, Default)]
+pub struct ExplainRetrievalParams {
+    /// The query to explain. Nothing is returned from it; this reports how
+    /// the index would read it.
+    pub query: String,
+    /// The limit the caller would have used, so the explanation can say
+    /// what that limit would drop. Defaults to 10.
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct ExplainRetrievalOutput {
+    pub query: String,
+    pub route: String,
+    /// The query as the index reads it: punctuation stripped, empties gone.
+    pub terms: Vec<String>,
+    pub fts_expression: Option<String>,
+    /// How terms combine. `all_terms` means one unmatched word empties the
+    /// result, which is the most common reason a search "finds nothing".
+    pub match_mode: String,
+    pub total_matches: i64,
+    pub would_return: i64,
+    pub dropped_by_limit: i64,
+    /// The store's own ceiling, applied even above a larger requested limit.
+    pub store_limit_cap: i64,
+    /// Plain-language notes about this result, including the ones about what
+    /// this tool structurally cannot tell you.
+    pub notes: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema, Default, Clone, Copy, PartialEq, Eq)]
@@ -637,6 +669,76 @@ impl FndrMcpServer {
                 })
                 .collect(),
             raw_included: include_raw,
+        }))
+    }
+
+    #[tool(
+        name = "fndr.explain_retrieval",
+        description = "Why a query returns what it does: the terms the index actually sees, how they combine, how many chunks match, and what a limit would drop. Explains only; returns no results."
+    )]
+    pub fn explain_retrieval(
+        &self,
+        Parameters(params): Parameters<ExplainRetrievalParams>,
+    ) -> Result<Json<ExplainRetrievalOutput>, ErrorData> {
+        let raw_released = false;
+        let result = self.explain_retrieval_inner(Parameters(params));
+        self.audit("fndr.explain_retrieval", raw_released, result)
+    }
+
+    fn explain_retrieval_inner(
+        &self,
+        Parameters(ExplainRetrievalParams { query, limit }): Parameters<ExplainRetrievalParams>,
+    ) -> Result<Json<ExplainRetrievalOutput>, ErrorData> {
+        let requested = limit.unwrap_or(10) as i64;
+        let store = self
+            .store
+            .lock()
+            .map_err(|_| ErrorData::internal_error("store lock poisoned", None))?;
+        let explanation = store
+            .explain_chunk_search(&query)
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+        let effective_limit = requested.min(explanation.store_limit_cap);
+        let would_return = explanation.total_matches.min(effective_limit);
+        let dropped_by_limit = explanation.total_matches - would_return;
+
+        let mut notes = Vec::new();
+        if explanation.fts_expression.is_none() {
+            notes.push(
+                "No usable terms survived normalization, so this query matches nothing. That is an empty result, not an error.".to_owned(),
+            );
+        } else if explanation.total_matches == 0 && explanation.terms.len() > 1 {
+            notes.push(
+                "Every term must match. One word absent from a chunk excludes it, which is the usual reason a multi-word query finds nothing.".to_owned(),
+            );
+        }
+        if requested > explanation.store_limit_cap {
+            notes.push(format!(
+                "The requested limit exceeds the store's ceiling of {}, which applies regardless.",
+                explanation.store_limit_cap
+            ));
+        }
+        // The honest boundary of this tool: FNDR redacts and skips before
+        // storage, so retrieval has nothing withheld to report. Saying so
+        // stops "nothing was redacted" being read as "nothing was excluded".
+        notes.push(
+            "Privacy exclusion happens at capture, not retrieval: blocked or redacted content was never stored, so it cannot appear here as dropped.".to_owned(),
+        );
+        notes.push(
+            "Only the keyword route exists. Nothing was ranked semantically, so a miss here does not mean a semantic search would also miss.".to_owned(),
+        );
+
+        Ok(Json(ExplainRetrievalOutput {
+            query,
+            route: "keyword".to_owned(),
+            terms: explanation.terms,
+            fts_expression: explanation.fts_expression,
+            match_mode: "all_terms".to_owned(),
+            total_matches: explanation.total_matches,
+            would_return,
+            dropped_by_limit,
+            store_limit_cap: explanation.store_limit_cap,
+            notes,
         }))
     }
 

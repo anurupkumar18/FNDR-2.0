@@ -6,8 +6,8 @@ use std::collections::BTreeSet;
 
 use fndr_capture::{FrameSource, PngFileSource};
 use fndr_mcp::{
-    ActiveFocusParams, ContextPackParams, DeltaParams, FeedbackParams, FndrMcpServer,
-    OpenTargetParams, PrivacyStatusParams, Rating, RecallKind, RecallParams,
+    ActiveFocusParams, ContextPackParams, DeltaParams, ExplainRetrievalParams, FeedbackParams,
+    FndrMcpServer, OpenTargetParams, PrivacyStatusParams, Rating, RecallKind, RecallParams,
     RememberDecisionParams, SearchParams, SourceEvidenceParams, TimelineGrain, TimelineParams,
 };
 use fndr_ocr::OcrEngine;
@@ -231,6 +231,49 @@ fn remember_decision_appends_and_rejects_an_empty_statement() {
         decided_at_ms: None,
     }));
     assert!(rejected.is_err(), "an empty statement must not be recorded");
+}
+
+#[test]
+fn explain_retrieval_names_the_and_semantics_and_its_own_blind_spot() {
+    let server = FndrMcpServer::new(store_with_one_record("the index was rebuilt"));
+
+    let explained = server
+        .explain_retrieval(Parameters(ExplainRetrievalParams {
+            query: "index, rebuilt!".into(),
+            limit: None,
+        }))
+        .expect("tool call")
+        .0;
+    assert_eq!(explained.route, "keyword");
+    assert_eq!(explained.match_mode, "all_terms");
+    assert_eq!(explained.terms, vec!["index", "rebuilt"]);
+    assert_eq!(explained.total_matches, 1);
+    assert_eq!(explained.would_return, 1);
+    assert_eq!(explained.dropped_by_limit, 0);
+    assert!(
+        explained
+            .notes
+            .iter()
+            .any(|note| note.contains("at capture, not retrieval")),
+        "the explanation must say why it cannot report privacy exclusions"
+    );
+
+    // The common "why did this find nothing" case.
+    let missed = server
+        .explain_retrieval(Parameters(ExplainRetrievalParams {
+            query: "index rebuilt kangaroo".into(),
+            limit: None,
+        }))
+        .expect("tool call")
+        .0;
+    assert_eq!(missed.total_matches, 0);
+    assert!(
+        missed
+            .notes
+            .iter()
+            .any(|note| note.contains("Every term must match")),
+        "a multi-word miss must explain the AND semantics that caused it"
+    );
 }
 
 #[test]
@@ -573,6 +616,10 @@ fn every_registered_tool_writes_an_audit_entry() {
         goal: "body".into(),
         token_budget: None,
         max_records: None,
+    }));
+    let _ = server.explain_retrieval(Parameters(ExplainRetrievalParams {
+        query: "body".into(),
+        limit: None,
     }));
     let _ = server.feedback(Parameters(FeedbackParams {
         rating: Rating::Helpful,

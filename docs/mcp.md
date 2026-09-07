@@ -5,7 +5,7 @@ The canonical tool set and its rationale live in
 P1 additions). This document is the per-tool contract for tools that are
 actually implemented; it grows one entry per tool as each lands, per
 ADR-007's tool-addition rule (use case, schema round-trip test,
-auth-failure test, rate limit, docs entry). Eleven of the fourteen are
+auth-failure test, rate limit, docs entry). Twelve of the fourteen are
 implemented today.
 
 Transport, auth, and posture (bearer token, Origin/Host allowlist, rate
@@ -197,6 +197,31 @@ not empty lists. An empty list would be read by an agent as "nothing was
 recorded", which is a silent degradation; a refusal says the kind is not
 implemented. They become real answers when their data models exist.
 
+### `fndr.explain_retrieval`
+
+Why a query returns what it does. Explains only; it runs no search and
+returns no results.
+
+**Params:** `{ query: string, limit?: number }` (the limit the caller
+*would* have used, so the explanation can say what it drops; default 10).
+
+**Result:** `{ query, route, terms, fts_expression?, match_mode, total_matches, would_return, dropped_by_limit, store_limit_cap, notes }`.
+
+`terms` is the query as the index reads it, after punctuation is stripped.
+`match_mode` is `all_terms`: every term must match, so a single unmatched
+word empties the result, which is the most common reason a multi-word
+search "finds nothing" — and the explanation says so in `notes` when that
+is what happened.
+
+`notes` also carries the two things this tool structurally cannot tell you:
+
+- Privacy exclusion happens at **capture**, not retrieval. Blocked or
+  redacted content was never stored, so it can never appear here as
+  dropped. Without that note, "nothing was redacted" reads as "nothing was
+  excluded".
+- Only the keyword route exists, so a miss here does not mean a semantic
+  search would also have missed.
+
 ### `fndr.feedback`
 
 Rate a surfaced result. Recorded locally; never mutates ranking.
@@ -232,8 +257,7 @@ touches ranking.
 
 ## Not yet implemented
 
-`fndr.project_context`, `fndr.graph_context`,
-`fndr.explain_retrieval`, and the
+`fndr.project_context`, `fndr.graph_context`, and the
 ratified P1 additions `fndr.answer` and `fndr.session_story`. See ADR-007
 for each tool's purpose and the Connected Planner amendment for
 `fndr.propose_action`.

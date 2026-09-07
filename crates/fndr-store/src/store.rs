@@ -26,6 +26,11 @@ pub struct Store {
     conn: Connection,
 }
 
+/// Hard ceiling on keyword-route results, applied regardless of a caller's
+/// requested limit. Named so `explain_chunk_search` can report it instead of
+/// a caller discovering it by getting fewer rows than asked for.
+pub const SEARCH_LIMIT_CAP: i64 = 50;
+
 /// Capture facts for one record (pipeline stage 8 persists one of these plus
 /// its chunks in a single transaction).
 #[derive(Debug, Clone)]
@@ -158,6 +163,23 @@ pub struct ChangeSummary {
     pub record_count: i64,
     pub newest_captured_at_ms: Option<i64>,
     pub apps: Vec<AppChange>,
+}
+
+/// Why a keyword search returned what it did. Reports the query as the
+/// index actually saw it, not as the caller wrote it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchExplanation {
+    /// The terms the query reduced to after punctuation was stripped.
+    pub terms: Vec<String>,
+    /// The FTS expression actually run, or `None` when nothing survived
+    /// normalization (in which case the search returns empty, not an error).
+    pub fts_expression: Option<String>,
+    /// Matches ignoring any limit, so a caller can tell "few matches" from
+    /// "many matches, truncated".
+    pub total_matches: i64,
+    /// The hard ceiling `search_chunks` applies regardless of the requested
+    /// limit.
+    pub store_limit_cap: i64,
 }
 
 /// One owner rating of a surfaced result. Recorded only; nothing reads it
@@ -400,7 +422,7 @@ impl Store {
              LIMIT ?2",
         )?;
         statement
-            .query_map((query, limit.min(50) as i64), |row| {
+            .query_map((query, (limit as i64).min(SEARCH_LIMIT_CAP)), |row| {
                 Ok(ChunkSearchHit {
                     chunk_id: row.get(0)?,
                     record_id: row.get(1)?,
@@ -618,6 +640,27 @@ impl Store {
         }))
     }
 
+    /// Explain a keyword search without running it: what the query became,
+    /// and how many chunks match it in total.
+    pub fn explain_chunk_search(&self, query: &str) -> Result<SearchExplanation, StoreError> {
+        let terms = fts_terms(query);
+        let fts_expression = fts_query(query);
+        let total_matches = match &fts_expression {
+            Some(expression) => self.conn.query_row(
+                "SELECT COUNT(*) FROM chunks_fts WHERE chunks_fts MATCH ?1",
+                [expression],
+                |row| row.get(0),
+            )?,
+            None => 0,
+        };
+        Ok(SearchExplanation {
+            terms,
+            fts_expression,
+            total_matches,
+            store_limit_cap: SEARCH_LIMIT_CAP,
+        })
+    }
+
     /// Record one rating of a surfaced result. Write-only as far as
     /// retrieval is concerned: no ranking path reads this table, and any
     /// future one has to arrive through ADR-006's bench gate.
@@ -803,8 +846,11 @@ impl Store {
     }
 }
 
-fn fts_query(query: &str) -> Option<String> {
-    let terms = query
+/// The terms an FTS query is reduced to: punctuation stripped, empties
+/// dropped. Split out from `fts_query` so `explain_chunk_search` can show a
+/// caller what their words actually became.
+fn fts_terms(query: &str) -> Vec<String> {
+    query
         .split_whitespace()
         .map(|term| {
             term.chars()
@@ -812,9 +858,18 @@ fn fts_query(query: &str) -> Option<String> {
                 .collect::<String>()
         })
         .filter(|term| !term.is_empty())
-        .map(|term| format!("\"{term}\""))
-        .collect::<Vec<_>>();
-    (!terms.is_empty()).then(|| terms.join(" AND "))
+        .collect()
+}
+
+fn fts_query(query: &str) -> Option<String> {
+    let terms = fts_terms(query);
+    (!terms.is_empty()).then(|| {
+        terms
+            .iter()
+            .map(|term| format!("\"{term}\""))
+            .collect::<Vec<_>>()
+            .join(" AND ")
+    })
 }
 
 #[cfg(test)]
@@ -1186,6 +1241,54 @@ mod tests {
     fn record_evidence_for_an_unknown_record_is_none_not_an_error() {
         let store = Store::open_in_memory().unwrap();
         assert!(store.record_evidence("missing").unwrap().is_none());
+    }
+
+    #[test]
+    fn explain_chunk_search_shows_the_query_the_index_actually_saw() {
+        let mut store = Store::open_in_memory().unwrap();
+        store
+            .insert_capture(
+                &NewRecord {
+                    id: "r1".into(),
+                    session_id: "s1".into(),
+                    source: "screen".into(),
+                    app_name: "Terminal".into(),
+                    bundle_id: None,
+                    url: None,
+                    window_title: "notes".into(),
+                    captured_at_ms: 1_000,
+                    created_at_ms: 1_000,
+                },
+                &[NewChunk {
+                    id: "c1".into(),
+                    ord: 0,
+                    text: "the index was rebuilt after the crash".into(),
+                }],
+            )
+            .unwrap();
+
+        let explained = store.explain_chunk_search("index, rebuilt!").unwrap();
+        assert_eq!(
+            explained.terms,
+            vec!["index", "rebuilt"],
+            "punctuation is stripped before the index sees the query"
+        );
+        assert_eq!(explained.total_matches, 1);
+        assert_eq!(explained.store_limit_cap, SEARCH_LIMIT_CAP);
+
+        // Every term must match, so one absent word empties the result.
+        let narrowed = store
+            .explain_chunk_search("index rebuilt kangaroo")
+            .unwrap();
+        assert_eq!(
+            narrowed.total_matches, 0,
+            "terms are ANDed: one unmatched word returns nothing"
+        );
+
+        let nothing_usable = store.explain_chunk_search("!!! ???").unwrap();
+        assert!(nothing_usable.terms.is_empty());
+        assert!(nothing_usable.fts_expression.is_none());
+        assert_eq!(nothing_usable.total_matches, 0);
     }
 
     #[test]
