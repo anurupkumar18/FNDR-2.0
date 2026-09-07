@@ -1,6 +1,8 @@
 //! Tauri shell: IPC command registration, event emission, windows, tray, permissions flow. The only crate allowed to import Tauri.
 
+pub mod app;
 pub mod capture_adapters;
+pub mod capture_lifecycle;
 pub mod capture_scheduler;
 pub mod capture_worker;
 pub mod commands;
@@ -14,7 +16,14 @@ use tauri_specta::{Builder, collect_commands};
 /// Every IPC command the shell registers. Adding a command here is what makes
 /// it exist for the frontend; the generated bindings follow automatically.
 pub fn specta_builder() -> Builder<tauri::Wry> {
-    Builder::<tauri::Wry>::new().commands(collect_commands![commands::engine_info])
+    Builder::<tauri::Wry>::new().commands(collect_commands![
+        commands::engine_info,
+        commands::capture_status,
+        commands::screen_recording_preflight,
+        commands::start_capture,
+        commands::recent_audit_entries,
+        commands::set_capture_paused
+    ])
 }
 
 /// Export the TypeScript bindings for all registered commands and their types.

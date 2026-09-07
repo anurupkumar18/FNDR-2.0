@@ -6,7 +6,7 @@
 use std::path::Path;
 
 use fndr_privacy::SanitizedUrl;
-use rusqlite::{Connection, OptionalExtension};
+use rusqlite::{Connection, OpenFlags, OptionalExtension};
 
 use crate::migrations;
 
@@ -230,6 +230,17 @@ pub enum DeleteScope {
 impl Store {
     pub fn open(path: &Path) -> Result<Self, StoreError> {
         Self::init(Connection::open(path)?)
+    }
+
+    /// Open an existing database for a strictly read-only owner surface.
+    ///
+    /// This intentionally skips WAL configuration and forward migrations: an
+    /// audit viewer must never create a vault, alter its schema, or acquire a
+    /// writer just to show what MCP has already recorded.
+    pub fn open_read_only(path: &Path) -> Result<Self, StoreError> {
+        Ok(Self {
+            conn: Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?,
+        })
     }
 
     pub fn open_in_memory() -> Result<Self, StoreError> {
@@ -1392,6 +1403,28 @@ mod tests {
         );
         assert_eq!(entries[1].tool, "fndr.search");
         assert!(!entries[1].raw_released);
+    }
+
+    #[test]
+    fn read_only_open_refuses_a_missing_database_without_creating_it() {
+        let directory = std::env::temp_dir().join(format!(
+            "fndr-read-only-store-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let database = directory.join("vault.sqlite3");
+
+        assert!(Store::open_read_only(&database).is_err());
+        assert!(
+            !database.exists(),
+            "a read-only viewer must not create an empty vault"
+        );
+
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

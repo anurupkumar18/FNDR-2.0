@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 
 use crate::{
-    CaptureSurfacePolicy, Frame, FrameSource, PerceptualDeduper, SemanticDedupWindow,
+    CaptureError, CaptureSurfacePolicy, Frame, FrameSource, PerceptualDeduper, SemanticDedupWindow,
     classify_capture_surface_policy, semantic_signature,
 };
 
@@ -53,12 +53,21 @@ pub enum CaptureStage {
 pub enum SkipReason {
     MetadataUnavailable,
     PreCapturePrivacy,
+    /// Metadata carried a private/incognito browsing cue. This is separate
+    /// from the generic privacy bucket so the owner can see why capture was
+    /// withheld without receiving the window title that triggered it.
+    PrivateBrowsing,
     AdmissionPolicy,
     PerceptualDuplicate,
     MissingPerceptualSignature,
     LowSignal,
     SemanticDuplicate,
     FinalPrivacy,
+    /// Screen Recording is unavailable or the macOS capture boundary failed
+    /// before a frame was available. This remains distinct from generic
+    /// capture failure so the desktop owner can give safe re-grant guidance
+    /// without exposing the underlying system error.
+    ScreenRecordingOrCaptureUnavailable,
     CaptureFailed,
     OcrFailed,
     PersistenceFailed,
@@ -268,8 +277,13 @@ where
         let frame = match self.frame_source.grab() {
             Ok(frame) => frame,
             Err(error) => {
+                let reason = if matches!(&error, CaptureError::PermissionOrTool(_)) {
+                    SkipReason::ScreenRecordingOrCaptureUnavailable
+                } else {
+                    SkipReason::CaptureFailed
+                };
                 return failed(
-                    SkipReason::CaptureFailed,
+                    reason,
                     PipelineError::new(CaptureStage::Capture, error.to_string()),
                 );
             }
@@ -357,6 +371,14 @@ mod tests {
                 .borrow_mut()
                 .pop_front()
                 .ok_or(crate::CaptureError::Empty)
+        }
+    }
+
+    struct PermissionUnavailableFrame;
+
+    impl FrameSource for PermissionUnavailableFrame {
+        fn grab(&self) -> Result<Frame, CaptureError> {
+            Err(CaptureError::PermissionOrTool("TCC unavailable".into()))
         }
     }
 
@@ -504,6 +526,42 @@ mod tests {
         assert_eq!(
             pipeline.run_tick(),
             CaptureTickOutcome::Skipped(SkipReason::MissingPerceptualSignature)
+        );
+        assert_eq!(pipeline.sink().captures, 0);
+    }
+
+    #[test]
+    fn screen_recording_unavailability_has_a_stable_non_secret_reason() {
+        let mut pipeline = CapturePipeline::new(
+            Context(context("Finder", "Project", None)),
+            PermissionUnavailableFrame,
+            Gate(GateDecision::Allow),
+            Ocr(OcrOutput {
+                text: String::new(),
+                confidence: 0.0,
+                block_count: 0,
+                low_signal: true,
+            }),
+            Sink::default(),
+            CapturePipelineConfig::default(),
+        );
+
+        let outcome = pipeline.run_tick();
+        assert!(matches!(
+            outcome,
+            CaptureTickOutcome::Failed {
+                reason: SkipReason::ScreenRecordingOrCaptureUnavailable,
+                error: PipelineError {
+                    stage: CaptureStage::Capture,
+                    ..
+                }
+            }
+        ));
+        assert_eq!(
+            pipeline
+                .counters()
+                .skip_count(SkipReason::ScreenRecordingOrCaptureUnavailable),
+            1
         );
         assert_eq!(pipeline.sink().captures, 0);
     }

@@ -11,7 +11,9 @@ use fndr_capture::{
 };
 use fndr_memory::{CaptureForPersistence, PersistCaptureOutcome, persist_capture};
 use fndr_ocr::OcrEngine;
-use fndr_privacy::{Blocklist, SafetyContext, SafetyDecision, evaluate, sanitize_url_for_storage};
+use fndr_privacy::{
+    Blocklist, SafetyContext, SafetyDecision, SafetyReason, evaluate, sanitize_url_for_storage,
+};
 use fndr_store::{Store, StoreError};
 
 /// The metadata-only safety check which runs before `FrameSource::grab`.
@@ -38,6 +40,9 @@ impl PreCaptureGate for PrivacyGate {
             },
             &self.blocklist,
         ) {
+            SafetyDecision::SkipStorage(SafetyReason::PrivateBrowsing) => {
+                GateDecision::Skip(SkipReason::PrivateBrowsing)
+            }
             SafetyDecision::SkipStorage(_) => GateDecision::Skip(SkipReason::PreCapturePrivacy),
             SafetyDecision::Allow | SafetyDecision::Redact(_) => GateDecision::Allow,
         }
@@ -227,6 +232,11 @@ mod tests {
         assert_eq!(
             gate.evaluate(&context("Finder", "Project", None)),
             GateDecision::Allow
+        );
+        assert_eq!(
+            gate.evaluate(&context("Google Chrome", "New Incognito Window", None)),
+            GateDecision::Skip(SkipReason::PrivateBrowsing),
+            "a private-browsing cue must be observable before pixels are captured"
         );
     }
 

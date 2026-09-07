@@ -45,6 +45,47 @@ It prints the `claude mcp add` line to connect Claude Code. Pass
 `--image <png>` to run from a screenshot file without any permissions, or
 `--query <text>` for a one-shot search instead of serving.
 
+For the desktop capture path, launch `fndr-shell` against an explicit local
+store and model in one terminal, then expose that same store to a local MCP
+client in a second terminal:
+
+```sh
+cargo run -p fndr-shell --bin fndr-shell -- --doctor --data-dir /tmp/fndr-demo \
+  --model models/Qwen3-Embedding-0.6B-Q8_0.gguf
+```
+
+```sh
+cargo run -p fndr-shell --bin fndr-shell -- --data-dir /tmp/fndr-demo \
+  --model models/Qwen3-Embedding-0.6B-Q8_0.gguf
+```
+
+```sh
+cargo run -p fndr-mcp -- --store /tmp/fndr-demo/vault.sqlite3
+```
+
+The capture host opens a trust/status window that contains no screen or OCR
+content. A normal launch neither requests Screen Recording nor starts capture:
+select **Start capture** only when deliberately demonstrating live capture.
+Afterward, closing the window keeps capture running in the menu bar; **Show
+FNDR** restores it and **Quit FNDR** drains capture before exit. The window's
+**Pause capture** button and the menu-bar **Pause / Resume Capture** control
+stop new capture opportunities only after the active worker acknowledges the
+request; they never drop an in-flight write. **Open audit log** reads the
+bounded local MCP ledger without creating a missing vault; it shows only time,
+tool, outcome, and the raw-text-release flag. The MCP command prints a
+one-process bearer token and connection command; do not record or commit that
+token.
+
+For a bounded demo narration and the current claim boundaries, use the
+[presenter card](docs/demo/PRESENTER-CARD.md) and
+[readiness checklist](docs/demo/DEMO-READINESS.md).
+
+`--doctor` is read-only: it checks only the supplied model and data paths,
+never starts Tauri or capture, and never requests Screen Recording.
+
+For a concise distinction between verified evidence and the presenter-operated
+hardware rehearsal, see [the alpha demo readiness checklist](docs/demo/DEMO-READINESS.md).
+
 ## v1 reference
 
 The v1 POC history is imported as the read-only `reference/v1` branch. Code moves from it only per the ADR-005 port policy: targeted functions, constants, prompts, or contracts, with tests and a `// Ported from FNDR v1 <path>` provenance note. Never develop on that branch, and never copy anything on the ADR-005 DISCARD list.

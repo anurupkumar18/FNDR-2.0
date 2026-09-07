@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>FNDR</title>
+    <link rel="stylesheet" href="app.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <p class="eyebrow">LOCAL-FIRST SCREEN MEMORY</p>
+        <h1>FNDR</h1>
+        <p class="lede">A small, inspectable desktop host for your local capture engine.</p>
+      </header>
+
+      <section class="status-card" aria-labelledby="capture-heading">
+        <div class="status-heading">
+          <div>
+            <p class="eyebrow">CAPTURE LIFECYCLE</p>
+            <h2 id="capture-heading">Current state</h2>
+          </div>
+          <span id="state" class="badge" data-state="loading" aria-live="polite">Loading</span>
+        </div>
+        <p id="detail" class="detail" aria-live="polite">Reading the local host state…</p>
+        <button id="start-capture" type="button" disabled>Start capture</button>
+        <button id="pause-toggle" type="button" disabled>Pause capture</button>
+        <dl>
+          <div>
+            <dt>Last update</dt>
+            <dd id="observed-at">Not reported yet</dd>
+          </div>
+          <div>
+            <dt>Latest tick</dt>
+            <dd id="tick">No capture result reported</dd>
+          </div>
+          <div>
+            <dt>Shutdown drain</dt>
+            <dd id="drain">Not reported</dd>
+          </div>
+        </dl>
+      </section>
+
+      <section class="audit-card" aria-labelledby="audit-heading">
+        <p class="eyebrow">LOCAL MCP AUDIT</p>
+        <h2 id="audit-heading">See what your agent accessed.</h2>
+        <p class="detail">
+          The audit ledger lists MCP tool name, outcome, time, and whether raw capture text was
+          released. It never includes the query, record IDs, URLs, or captured content.
+        </p>
+        <button id="open-audit-log" type="button" disabled>Open audit log</button>
+        <p id="audit-detail" class="detail" aria-live="polite">
+          Open this local, read-only view when you want to inspect agent activity.
+        </p>
+        <ul id="audit-entries" class="audit-entries" hidden></ul>
+      </section>
+
+      <section class="truth-card" aria-labelledby="truth-heading">
+        <p class="eyebrow">BEFORE CAPTURE</p>
+        <h2 id="truth-heading">You start capture deliberately.</h2>
+        <p>
+          Opening FNDR does not request Screen Recording or collect context. Select
+          <strong>Start capture</strong> only after you are ready for the macOS permission flow.
+          This window receives generated lifecycle codes only—never screen pixels, OCR text,
+          URLs, or model output.
+        </p>
+        <p>
+          The menu-bar FNDR icon contains the explicit <strong>Quit FNDR</strong> control. It
+          drains pending local writes before the host exits.
+        </p>
+        <p>
+          <strong>Screen Recording preflight:</strong>
+          <span id="screen-recording-access" aria-live="polite">Checking locally…</span>
+        </p>
+      </section>
+    </main>
+    <script src="app.js"></script>
+  </body>
+</html>

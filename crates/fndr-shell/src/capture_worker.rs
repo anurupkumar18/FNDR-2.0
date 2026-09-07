@@ -62,6 +62,10 @@ pub enum CaptureWorkerStopError {
 
 enum WorkerCommand {
     Shutdown,
+    SetPaused {
+        paused: bool,
+        acknowledged: SyncSender<()>,
+    },
 }
 
 /// Handle retained by the Tauri lifecycle owner. Call `shutdown` from the
@@ -73,6 +77,24 @@ pub struct CaptureWorkerHandle {
 }
 
 impl CaptureWorkerHandle {
+    /// Stop or resume future capture opportunities. The command is
+    /// acknowledged only after the dedicated worker has observed it, so a
+    /// caller can truthfully present the paused state without racing a second
+    /// tick. An already in-flight capture is allowed to finish before that
+    /// acknowledgement; the worker never abandons a partial write.
+    pub fn set_paused(&self, paused: bool) -> Result<(), CaptureWorkerControlError> {
+        let (acknowledged_tx, acknowledged_rx) = mpsc::sync_channel(0);
+        self.command_tx
+            .send(WorkerCommand::SetPaused {
+                paused,
+                acknowledged: acknowledged_tx,
+            })
+            .map_err(|_| CaptureWorkerControlError::Unavailable)?;
+        acknowledged_rx
+            .recv()
+            .map_err(|_| CaptureWorkerControlError::Unavailable)
+    }
+
     /// Request a drain and wait for the dedicated capture thread. This is the
     /// only blocking lifecycle call; it must not run on Tauri's async runtime.
     pub fn shutdown(mut self) -> Result<CaptureWorkerReport, CaptureWorkerStopError> {
@@ -83,6 +105,12 @@ impl CaptureWorkerHandle {
             .join()
             .map_err(|_| CaptureWorkerStopError::Panicked)?
     }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum CaptureWorkerControlError {
+    #[error("capture worker is unavailable")]
+    Unavailable,
 }
 
 /// Start the real macOS capture owner. The scheduler is constructed inside the
@@ -169,11 +197,24 @@ fn run_capture_loop<S: CaptureLoop, I: InputIdleSource>(
     event_tx: SyncSender<CaptureWorkerEvent>,
 ) -> Result<CaptureWorkerReport, CaptureWorkerStopError> {
     let mut ticks = 0;
+    let mut paused = false;
     // Zero forces an immediate first decision: `since_capture` is huge, so
     // the very first iteration captures right away unless input is already
     // deep-idle, matching the fixed-cadence loop's prior startup behavior.
     let mut last_capture_ms: u64 = 0;
     loop {
+        if paused {
+            match command_rx.recv() {
+                Ok(command) => {
+                    if apply_command(command, &mut paused) {
+                        return finish(&mut scheduler, ticks);
+                    }
+                }
+                Err(_) => return finish(&mut scheduler, ticks),
+            }
+            continue;
+        }
+
         let now = now_ms();
         let since_capture = Duration::from_millis(now.saturating_sub(last_capture_ms));
         let idle = idle_source.input_idle();
@@ -193,24 +234,48 @@ fn run_capture_loop<S: CaptureLoop, I: InputIdleSource>(
                 });
 
                 match command_rx.try_recv() {
-                    Ok(WorkerCommand::Shutdown) | Err(mpsc::TryRecvError::Disconnected) => {
-                        return finish(&mut scheduler, ticks);
+                    Ok(command) => {
+                        if apply_command(command, &mut paused) {
+                            return finish(&mut scheduler, ticks);
+                        }
                     }
+                    Err(mpsc::TryRecvError::Disconnected) => return finish(&mut scheduler, ticks),
                     Err(mpsc::TryRecvError::Empty) => {}
                 }
             }
             SamplingDecision::Wait(wait) => match command_rx.recv_timeout(wait) {
-                Ok(WorkerCommand::Shutdown) | Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    return finish(&mut scheduler, ticks);
+                Ok(command) => {
+                    if apply_command(command, &mut paused) {
+                        return finish(&mut scheduler, ticks);
+                    }
                 }
+                Err(mpsc::RecvTimeoutError::Disconnected) => return finish(&mut scheduler, ticks),
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
             },
             SamplingDecision::DeepIdle => match command_rx.recv_timeout(sampling.idle_interval) {
-                Ok(WorkerCommand::Shutdown) | Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    return finish(&mut scheduler, ticks);
+                Ok(command) => {
+                    if apply_command(command, &mut paused) {
+                        return finish(&mut scheduler, ticks);
+                    }
                 }
+                Err(mpsc::RecvTimeoutError::Disconnected) => return finish(&mut scheduler, ticks),
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
             },
+        }
+    }
+}
+
+/// Returns true when the caller must finish and drain the scheduler.
+fn apply_command(command: WorkerCommand, paused: &mut bool) -> bool {
+    match command {
+        WorkerCommand::Shutdown => true,
+        WorkerCommand::SetPaused {
+            paused: next,
+            acknowledged,
+        } => {
+            *paused = next;
+            let _ = acknowledged.send(());
+            false
         }
     }
 }
@@ -381,5 +446,32 @@ mod tests {
         let report = worker.shutdown().unwrap();
         assert!(report.ticks >= 2);
         assert_eq!(shutdown_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn pause_acknowledgement_stops_new_ticks_until_resume() {
+        let ticks = Arc::new(AtomicUsize::new(0));
+        let fake_ticks = Arc::clone(&ticks);
+        let (worker, events) = start_worker(fast_policy(), FixedIdle(Duration::ZERO), move || {
+            Ok(FakeScheduler {
+                ticks: fake_ticks,
+                shutdown_calls: Arc::new(AtomicUsize::new(0)),
+            })
+        })
+        .unwrap();
+
+        events.recv_timeout(Duration::from_secs(1)).unwrap();
+        worker.set_paused(true).unwrap();
+        assert!(matches!(
+            events.recv_timeout(Duration::from_millis(2200)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+        assert_eq!(ticks.load(Ordering::SeqCst), 1);
+
+        worker.set_paused(false).unwrap();
+        events
+            .recv_timeout(Duration::from_secs(1))
+            .expect("resume should permit the next capture opportunity");
+        worker.shutdown().unwrap();
     }
 }

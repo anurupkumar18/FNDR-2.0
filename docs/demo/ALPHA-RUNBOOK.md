@@ -105,7 +105,69 @@ it to a document. An authenticated agent can also call `fndr.privacy_status`
 to see the local-default flag, planner-disabled flag, and configured
 blocklist counts without receiving the blocklist entries.
 
-### 5. Cleanup
+### 5. Desktop preflight, lifecycle, and durable MCP host
+
+This is the current alpha desktop path. It opens a trust/status window and a
+menu-bar icon, but a normal launch does not request Screen Recording or start
+capture. The window shows generated lifecycle codes only, never screen
+content, OCR text, URLs, or model output. First show the visible
+`not_started` state and privacy explanation. Only then select **Start
+capture** when the human presenter intends to grant Screen Recording. Once
+active, closing the window leaves the capture host running in the menu bar,
+where **Show FNDR** restores it and **Quit FNDR** starts the shutdown drain.
+**Pause capture** in the window and **Pause / Resume Capture** in the menu bar
+wait for the worker acknowledgement before showing a paused state; they do not
+interrupt an in-flight local write:
+
+The trust window also displays the current non-prompting Screen Recording
+preflight. `Granted` means macOS currently reports access; `Not granted` is
+not a prompt and does not start capture. Only **Start capture** can begin the
+macOS permission flow.
+
+**Open audit log** reads a bounded local MCP ledger only when the owner asks.
+It shows time, tool, outcome, and whether raw capture text was released—never
+the query, record ID, URL, or captured content. With no existing vault it
+reports no recorded MCP activity and does not create one.
+
+If the first capture tick reports **screen recording or capture unavailable**,
+the window directs the presenter to FNDR's Screen Recording setting in macOS
+System Settings. This is a stable content-free failure class, not proof that
+macOS denied a particular request; after granting or re-granting access, wait
+for the next capture opportunity and confirm its new lifecycle status.
+
+When foreground metadata itself carries the existing private/incognito title
+cue, FNDR reports **private browsing** and withholds pixels before capture.
+This is a visible safety cue, not a claim of complete browser-native private
+window detection; do not demonstrate it as a universal incognito guarantee.
+
+First, run the non-capturing doctor. It returns `3` when a supplied model is
+missing or the data directory cannot be prepared; it does not create the data
+directory, launch the window, or request a macOS permission:
+
+```sh
+cargo run -p fndr-shell --bin fndr-shell -- --doctor --data-dir "$alpha_tmp/desktop" \
+  --model models/Qwen3-Embedding-0.6B-Q8_0.gguf
+```
+
+Run the first command in one terminal. Leave it running, then run the second
+in another terminal:
+
+```sh
+cargo run -p fndr-shell --bin fndr-shell -- --data-dir "$alpha_tmp/desktop" \
+  --model models/Qwen3-Embedding-0.6B-Q8_0.gguf
+```
+
+```sh
+cargo run -p fndr-mcp -- --store "$alpha_tmp/desktop/vault.sqlite3"
+```
+
+Use the second command's printed bearer-token snippet to connect the MCP
+client. For a bounded capture lifecycle rehearsal, add `--run-seconds 60` to
+the first command: this explicitly CLI-authorizes capture to start and then
+requests the clean exit drain. It is not a substitute for deliberate
+permission and hardware verification.
+
+### 6. Cleanup
 
 After the process stops, remove only the temporary directory created above:
 
