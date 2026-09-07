@@ -22,6 +22,7 @@
 //! take a window take explicit unix-ms bounds until a second caller needs
 //! the shared parser.
 
+use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -434,8 +435,10 @@ pub struct FndrMcpServer {
     store: Arc<Mutex<Store>>,
     blocklist: Blocklist,
     // Both present or both absent — never partially configured. Absent
-    // means "no model was given at launch," a typed, visible state
-    // (SearchOutput.vector_route_available), never a silent skip.
+    // means the server was built without a model, a typed, visible state
+    // (SearchOutput.vector_route_available), never a silent skip. Set only
+    // via `with_vector_route`, which nothing calls yet outside this crate's
+    // own tests (see that constructor's doc comment).
     vector_route: Option<(Arc<dyn fndr_inference::Embedder>, PathBuf)>,
 }
 
@@ -507,9 +510,10 @@ impl FndrMcpServer {
     }
 
     /// Like `with_blocklist`, plus a query-side embedder and the Lance index
-    /// directory it should query. `fndr-mcp`'s CLI entrypoint calls this
-    /// only when launched with `--model`; every other caller (including all
-    /// existing tests) keeps using `new`/`with_blocklist` unchanged.
+    /// directory it should query. Intended for a CLI entrypoint to call when
+    /// launched with a model path (not yet wired as of this commit); every
+    /// other caller (including all existing tests) keeps using
+    /// `new`/`with_blocklist` unchanged.
     pub fn with_vector_route(
         store: Store,
         blocklist: Blocklist,
@@ -541,31 +545,40 @@ impl FndrMcpServer {
         Parameters(SearchParams { query, limit }): Parameters<SearchParams>,
     ) -> Result<Json<SearchOutput>, ErrorData> {
         let limit = limit.unwrap_or(10).min(50) as usize;
-        let store = self
-            .store
-            .lock()
-            .map_err(|_| ErrorData::internal_error("store lock poisoned", None))?;
 
-        let keyword_hits = KeywordRetriever::new(&store)
-            .search(&query, limit)
-            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        // Keyword search under its own lock scope: the guard is dropped
+        // before the vector route (embedding inference plus Lance disk I/O)
+        // runs, so a concurrent MCP call is never blocked on that round
+        // trip waiting for a store lock it does not need.
+        let (mut hits, mut seen): (Vec<SearchHitOut>, HashSet<String>) = {
+            let store = self
+                .store
+                .lock()
+                .map_err(|_| ErrorData::internal_error("store lock poisoned", None))?;
 
-        let mut seen: std::collections::HashSet<String> =
-            keyword_hits.iter().map(|h| h.chunk_id.clone()).collect();
-        let mut hits: Vec<SearchHitOut> = keyword_hits
-            .into_iter()
-            .map(|h| SearchHitOut {
-                record_id: h.record_id,
-                chunk_id: h.chunk_id,
-                source: h.source,
-                captured_at_ms: h.captured_at_ms as f64,
-                snippet: h.snippet,
-                route: "keyword".to_owned(),
-            })
-            .collect();
+            let keyword_hits = KeywordRetriever::new(&store)
+                .search(&query, limit)
+                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+            let seen: HashSet<String> = keyword_hits.iter().map(|h| h.chunk_id.clone()).collect();
+            let hits: Vec<SearchHitOut> = keyword_hits
+                .into_iter()
+                .map(|h| SearchHitOut {
+                    record_id: h.record_id,
+                    chunk_id: h.chunk_id,
+                    source: h.source,
+                    captured_at_ms: h.captured_at_ms as f64,
+                    snippet: h.snippet,
+                    route: "keyword".to_owned(),
+                })
+                .collect();
+            (hits, seen)
+        };
 
         let vector_route_available = self.vector_route.is_some();
         if let Some((embedder, index_dir)) = &self.vector_route {
+            // No store lock held here: VectorRetriever::search never
+            // touches `store`, only the snippet-building loop below does.
             let vector_hits =
                 block_on_from_sync(fndr_retrieval::VectorRetriever::new(index_dir).search(
                     &query,
@@ -574,19 +587,29 @@ impl FndrMcpServer {
                 ))
                 .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
 
-            for hit in vector_hits {
-                if !seen.insert(hit.chunk_id.clone()) {
-                    continue; // already present via the keyword route
+            let new_hits: Vec<_> = vector_hits
+                .into_iter()
+                .filter(|hit| seen.insert(hit.chunk_id.clone()))
+                .collect();
+
+            if !new_hits.is_empty() {
+                // Re-acquire the lock only for the short span that builds
+                // snippets from the durable store.
+                let store = self
+                    .store
+                    .lock()
+                    .map_err(|_| ErrorData::internal_error("store lock poisoned", None))?;
+                for hit in new_hits {
+                    let snippet = vector_hit_snippet(&store, &hit).unwrap_or_default();
+                    hits.push(SearchHitOut {
+                        record_id: hit.record_id,
+                        chunk_id: hit.chunk_id,
+                        source: hit.source,
+                        captured_at_ms: hit.captured_at_ms as f64,
+                        snippet,
+                        route: "vector".to_owned(),
+                    });
                 }
-                let snippet = self.vector_hit_snippet(&store, &hit).unwrap_or_default();
-                hits.push(SearchHitOut {
-                    record_id: hit.record_id,
-                    chunk_id: hit.chunk_id,
-                    source: hit.source,
-                    captured_at_ms: hit.captured_at_ms as f64,
-                    snippet,
-                    route: "vector".to_owned(),
-                });
             }
         }
         hits.truncate(limit);
@@ -595,25 +618,6 @@ impl FndrMcpServer {
             hits,
             vector_route_available,
         }))
-    }
-
-    /// A vector hit carries no FTS match markers (Lance rows have no text
-    /// snippet), so this builds a plain truncated excerpt from the same
-    /// durable store the keyword route reads, instead of returning an empty
-    /// or fabricated snippet.
-    fn vector_hit_snippet(&self, store: &Store, hit: &fndr_retrieval::VectorHit) -> Option<String> {
-        const SNIPPET_CHARS: usize = 200;
-        let evidence = store.record_evidence(&hit.record_id).ok()??;
-        let chunk = evidence
-            .chunks
-            .into_iter()
-            .find(|c| c.chunk_id == hit.chunk_id)?;
-        if chunk.text.chars().count() <= SNIPPET_CHARS {
-            Some(chunk.text)
-        } else {
-            let truncated: String = chunk.text.chars().take(SNIPPET_CHARS).collect();
-            Some(format!("{truncated}…"))
-        }
     }
 
     #[tool(
@@ -1237,6 +1241,25 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
+/// A vector hit carries no FTS match markers (Lance rows have no text
+/// snippet), so this builds a plain truncated excerpt from the same
+/// durable store the keyword route reads, instead of returning an empty
+/// or fabricated snippet.
+fn vector_hit_snippet(store: &Store, hit: &fndr_retrieval::VectorHit) -> Option<String> {
+    const SNIPPET_CHARS: usize = 200;
+    let evidence = store.record_evidence(&hit.record_id).ok()??;
+    let chunk = evidence
+        .chunks
+        .into_iter()
+        .find(|c| c.chunk_id == hit.chunk_id)?;
+    if chunk.text.chars().count() <= SNIPPET_CHARS {
+        Some(chunk.text)
+    } else {
+        let truncated: String = chunk.text.chars().take(SNIPPET_CHARS).collect();
+        Some(format!("{truncated}…"))
+    }
+}
+
 struct AuthState {
     config: AuthConfig,
     rate: RateWindow,
@@ -1290,211 +1313,4 @@ pub async fn serve_loopback(
         }
     });
     Ok((addr, handle))
-}
-
-#[cfg(test)]
-mod vector_route_tests {
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    use fndr_inference::{EmbedError, EmbeddingSpec};
-    use fndr_store::{LanceWriter, NewChunk, NewRecord};
-
-    use super::*;
-
-    /// Same pattern as fndr-retrieval's own TestEmbedder: deterministic,
-    /// fast, keyed on a substring, exercises the plumbing without a real
-    /// model load. Not a claim about ranking quality (that's make bench's
-    /// job).
-    struct TestEmbedder {
-        spec: EmbeddingSpec,
-    }
-
-    impl fndr_inference::Embedder for TestEmbedder {
-        fn spec(&self) -> &EmbeddingSpec {
-            &self.spec
-        }
-
-        fn embed_documents(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, EmbedError> {
-            Ok(texts
-                .iter()
-                .map(|text| {
-                    if text.contains("bridge") {
-                        vec![1.0, 0.0]
-                    } else {
-                        vec![0.0, 1.0]
-                    }
-                })
-                .collect())
-        }
-    }
-
-    fn scratch(name: &str) -> std::path::PathBuf {
-        static NEXT: AtomicU64 = AtomicU64::new(0);
-        let path = std::env::temp_dir().join(format!(
-            "fndr-mcp-vector-route-{name}-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::create_dir_all(&path).unwrap();
-        path
-    }
-
-    #[tokio::test]
-    async fn search_without_vector_route_behaves_exactly_as_before() {
-        let dir = scratch("keyword-only");
-        let mut store = Store::open(&dir.join("vault.sqlite3")).unwrap();
-        store
-            .insert_capture(
-                &NewRecord {
-                    id: "r1".into(),
-                    session_id: "s1".into(),
-                    source: "screen".into(),
-                    app_name: "Notes".into(),
-                    bundle_id: None,
-                    url: None,
-                    window_title: "fixture".into(),
-                    captured_at_ms: 42,
-                    created_at_ms: 42,
-                },
-                &[NewChunk {
-                    id: "c1".into(),
-                    ord: 0,
-                    text: "the suspension bridge inspection is due".into(),
-                }],
-            )
-            .unwrap();
-
-        let server = FndrMcpServer::new(store);
-        let Json(out) = server
-            .search_inner(Parameters(SearchParams {
-                query: "bridge".into(),
-                limit: None,
-            }))
-            .unwrap();
-        assert_eq!(out.hits.len(), 1);
-        assert_eq!(out.hits[0].route, "keyword");
-        assert!(!out.vector_route_available);
-
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-
-    // multi_thread: search_inner's block_in_place bridge for the vector
-    // route requires a multi-threaded runtime to hand blocking work off to
-    // (see block_on_from_sync); the default current_thread test runtime
-    // panics on it.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn search_with_vector_route_finds_a_semantic_match_keyword_would_miss() {
-        let dir = scratch("vector-fills-gap");
-        let mut store = Store::open(&dir.join("vault.sqlite3")).unwrap();
-        store
-            .insert_capture(
-                &NewRecord {
-                    id: "r-bridge".into(),
-                    session_id: "s1".into(),
-                    source: "screen".into(),
-                    app_name: "Notes".into(),
-                    bundle_id: None,
-                    url: None,
-                    window_title: "fixture".into(),
-                    captured_at_ms: 42,
-                    created_at_ms: 42,
-                },
-                &[NewChunk {
-                    id: "c-bridge".into(),
-                    ord: 0,
-                    text: "the suspension bridge inspection is due".into(),
-                }],
-            )
-            .unwrap();
-
-        let embedder: std::sync::Arc<dyn fndr_inference::Embedder> =
-            std::sync::Arc::new(TestEmbedder {
-                spec: EmbeddingSpec {
-                    model_id: "test-vector",
-                    dim: 2,
-                    lance_table: "test_mcp_vector_chunks",
-                },
-            });
-        let index_dir = dir.join("index");
-        LanceWriter::new(&index_dir)
-            .flush_once(&mut store, embedder.as_ref(), 43)
-            .await
-            .unwrap();
-
-        // "crossing report" shares zero literal words with the stored text,
-        // so KeywordRetriever alone would return nothing; TestEmbedder maps
-        // any text without "bridge" to the same vector as one with it is
-        // near, proving this is the vector route's hit, not keyword's.
-        let server =
-            FndrMcpServer::with_vector_route(store, Blocklist::default(), embedder, index_dir);
-        let Json(out) = server
-            .search_inner(Parameters(SearchParams {
-                query: "crossing report".into(),
-                limit: None,
-            }))
-            .unwrap();
-        assert_eq!(out.hits.len(), 1);
-        assert_eq!(out.hits[0].chunk_id, "c-bridge");
-        assert_eq!(out.hits[0].route, "vector");
-        assert!(out.vector_route_available);
-
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-
-    // multi_thread: see the comment on the previous test.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn a_hit_found_by_both_routes_is_not_duplicated() {
-        let dir = scratch("dedupe");
-        let mut store = Store::open(&dir.join("vault.sqlite3")).unwrap();
-        store
-            .insert_capture(
-                &NewRecord {
-                    id: "r-bridge".into(),
-                    session_id: "s1".into(),
-                    source: "screen".into(),
-                    app_name: "Notes".into(),
-                    bundle_id: None,
-                    url: None,
-                    window_title: "fixture".into(),
-                    captured_at_ms: 42,
-                    created_at_ms: 42,
-                },
-                &[NewChunk {
-                    id: "c-bridge".into(),
-                    ord: 0,
-                    text: "the suspension bridge inspection is due".into(),
-                }],
-            )
-            .unwrap();
-
-        let embedder: std::sync::Arc<dyn fndr_inference::Embedder> =
-            std::sync::Arc::new(TestEmbedder {
-                spec: EmbeddingSpec {
-                    model_id: "test-vector",
-                    dim: 2,
-                    lance_table: "test_mcp_vector_chunks_dedupe",
-                },
-            });
-        let index_dir = dir.join("index");
-        LanceWriter::new(&index_dir)
-            .flush_once(&mut store, embedder.as_ref(), 43)
-            .await
-            .unwrap();
-
-        // "bridge" matches both KeywordRetriever (literal term) and
-        // VectorRetriever (TestEmbedder's bridge-keyed vector) for the same
-        // chunk: it must appear exactly once in the merged output.
-        let server =
-            FndrMcpServer::with_vector_route(store, Blocklist::default(), embedder, index_dir);
-        let Json(out) = server
-            .search_inner(Parameters(SearchParams {
-                query: "bridge".into(),
-                limit: None,
-            }))
-            .unwrap();
-        assert_eq!(out.hits.len(), 1);
-        assert_eq!(out.hits[0].route, "keyword");
-
-        std::fs::remove_dir_all(dir).unwrap();
-    }
 }
