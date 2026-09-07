@@ -214,4 +214,14 @@ mod tests {
             Err("--model and --index-dir must be given together".to_owned())
         );
     }
+
+    #[test]
+    fn index_dir_without_model_is_rejected() {
+        assert_eq!(
+            LaunchOptions::parse(
+                ["--store", "/tmp/fndr.sqlite3", "--index-dir", "/tmp/index"].map(str::to_owned)
+            ),
+            Err("--model and --index-dir must be given together".to_owned())
+        );
+    }
 }

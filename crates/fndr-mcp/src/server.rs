@@ -436,9 +436,9 @@ pub struct FndrMcpServer {
     blocklist: Blocklist,
     // Both present or both absent — never partially configured. Absent
     // means the server was built without a model, a typed, visible state
-    // (SearchOutput.vector_route_available), never a silent skip. Set only
-    // via `with_vector_route`, which nothing calls yet outside this crate's
-    // own tests (see that constructor's doc comment).
+    // (SearchOutput.vector_route_available), never a silent skip. Set via
+    // `with_vector_route`, which `fndr-mcp`'s CLI calls when launched with
+    // `--model`/`--index-dir` (see that constructor's doc comment).
     vector_route: Option<(Arc<dyn fndr_inference::Embedder>, PathBuf)>,
 }
 
@@ -510,10 +510,10 @@ impl FndrMcpServer {
     }
 
     /// Like `with_blocklist`, plus a query-side embedder and the Lance index
-    /// directory it should query. Intended for a CLI entrypoint to call when
-    /// launched with a model path (not yet wired as of this commit); every
-    /// other caller (including all existing tests) keeps using
-    /// `new`/`with_blocklist` unchanged.
+    /// directory it should query. `fndr-mcp`'s CLI entrypoint calls this
+    /// when launched with `--model`/`--index-dir`; every other caller
+    /// (including all existing tests) keeps using `new`/`with_blocklist`
+    /// unchanged.
     pub fn with_vector_route(
         store: Store,
         blocklist: Blocklist,
