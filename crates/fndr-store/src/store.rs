@@ -144,6 +144,15 @@ pub struct ActivityBucket {
     pub record_count: i64,
 }
 
+/// One entry read back from the append-only decision ledger.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LedgerDecision {
+    pub id: i64,
+    pub decided_at_ms: i64,
+    pub statement: String,
+    pub record_id: Option<String>,
+}
+
 /// A durable-memory selection used by T-206. Domain matching shares the
 /// privacy crate's parsed-host semantics; raw SQL substring matching is never
 /// used for owner deletion requests.
@@ -568,6 +577,33 @@ impl Store {
         }))
     }
 
+    /// Read the decision ledger, newest first. `since_ms` bounds the read to
+    /// decisions made at or after that instant.
+    pub fn recent_decisions(
+        &self,
+        since_ms: Option<i64>,
+        limit: usize,
+    ) -> Result<Vec<LedgerDecision>, StoreError> {
+        let mut statement = self.conn.prepare(
+            "SELECT id, decided_at_ms, statement, record_id
+             FROM decision_ledger
+             WHERE decided_at_ms >= ?1
+             ORDER BY decided_at_ms DESC, id DESC
+             LIMIT ?2",
+        )?;
+        let rows = statement
+            .query_map((since_ms.unwrap_or(i64::MIN), limit as i64), |row| {
+                Ok(LedgerDecision {
+                    id: row.get(0)?,
+                    decided_at_ms: row.get(1)?,
+                    statement: row.get(2)?,
+                    record_id: row.get(3)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
     /// Append one entry to the append-only decision ledger (schema v1). This
     /// is the only durable write MCP's `fndr.remember_decision` performs; it
     /// never edits or removes prior entries.
@@ -967,6 +1003,25 @@ mod tests {
     fn record_evidence_for_an_unknown_record_is_none_not_an_error() {
         let store = Store::open_in_memory().unwrap();
         assert!(store.record_evidence("missing").unwrap().is_none());
+    }
+
+    #[test]
+    fn recent_decisions_are_newest_first_and_respect_since_and_limit() {
+        let store = Store::open_in_memory().unwrap();
+        store.remember_decision(1_000, "oldest", None).unwrap();
+        store.remember_decision(2_000, "middle", None).unwrap();
+        store.remember_decision(3_000, "newest", None).unwrap();
+
+        let all = store.recent_decisions(None, 10).unwrap();
+        let statements: Vec<&str> = all.iter().map(|d| d.statement.as_str()).collect();
+        assert_eq!(statements, vec!["newest", "middle", "oldest"]);
+
+        let since = store.recent_decisions(Some(2_000), 10).unwrap();
+        assert_eq!(since.len(), 2, "since_ms is inclusive of its own instant");
+
+        let capped = store.recent_decisions(None, 1).unwrap();
+        assert_eq!(capped.len(), 1);
+        assert_eq!(capped[0].statement, "newest");
     }
 
     #[test]

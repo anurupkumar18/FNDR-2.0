@@ -4,8 +4,8 @@
 
 use fndr_capture::{FrameSource, PngFileSource};
 use fndr_mcp::{
-    FndrMcpServer, PrivacyStatusParams, RememberDecisionParams, SearchParams, SourceEvidenceParams,
-    TimelineGrain, TimelineParams,
+    FndrMcpServer, PrivacyStatusParams, RecallKind, RecallParams, RememberDecisionParams,
+    SearchParams, SourceEvidenceParams, TimelineGrain, TimelineParams,
 };
 use fndr_ocr::OcrEngine;
 use fndr_privacy::Blocklist;
@@ -228,6 +228,51 @@ fn remember_decision_appends_and_rejects_an_empty_statement() {
         decided_at_ms: None,
     }));
     assert!(rejected.is_err(), "an empty statement must not be recorded");
+}
+
+#[test]
+fn a_remembered_decision_comes_back_through_recall() {
+    let server = FndrMcpServer::new(Store::open_in_memory().unwrap());
+    server
+        .remember_decision(Parameters(RememberDecisionParams {
+            statement: "bucket timelines on the caller's local day".into(),
+            record_id: None,
+            decided_at_ms: Some(2_000),
+        }))
+        .expect("write");
+
+    let recalled = server
+        .recall(Parameters(RecallParams {
+            kind: RecallKind::Decision,
+            since_ms: None,
+            limit: None,
+        }))
+        .expect("read")
+        .0;
+
+    assert_eq!(recalled.kind, "decision");
+    assert_eq!(recalled.decisions.len(), 1);
+    assert_eq!(
+        recalled.decisions[0].statement,
+        "bucket timelines on the caller's local day"
+    );
+    assert_eq!(recalled.decisions[0].decided_at_ms, 2_000.0);
+}
+
+#[test]
+fn recall_refuses_kinds_that_have_no_data_model_instead_of_answering_empty() {
+    let server = FndrMcpServer::new(Store::open_in_memory().unwrap());
+    for kind in [RecallKind::Error, RecallKind::Blocker, RecallKind::Todo] {
+        let result = server.recall(Parameters(RecallParams {
+            kind,
+            since_ms: None,
+            limit: None,
+        }));
+        assert!(
+            result.is_err(),
+            "an unbacked kind must refuse, not report 'you have none'"
+        );
+    }
 }
 
 #[test]

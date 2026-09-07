@@ -5,7 +5,7 @@ The canonical tool set and its rationale live in
 P1 additions). This document is the per-tool contract for tools that are
 actually implemented; it grows one entry per tool as each lands, per
 ADR-007's tool-addition rule (use case, schema round-trip test,
-auth-failure test, rate limit, docs entry). Five of the fourteen are
+auth-failure test, rate limit, docs entry). Six of the fourteen are
 implemented today.
 
 Transport, auth, and posture (bearer token, Origin/Host allowlist, rate
@@ -79,6 +79,23 @@ without moving its content. `raw_included` echoes the gate's state so a
 caller never infers it from an absent field. An unknown `record_id` is a
 typed refusal (`invalid_params`), never an empty success.
 
+### `fndr.recall`
+
+Recall structured knowledge by kind. Only `decision` has a data model
+today, backed by the same `decision_ledger` `fndr.remember_decision`
+writes.
+
+**Params:** `{ kind: "decision" | "error" | "blocker" | "todo", since_ms?: number, limit?: number }`.
+`limit` defaults to 20, capped at 200. `since_ms` is inclusive.
+
+**Result:** `{ kind, decisions: [{ id, decided_at_ms, statement, record_id }] }`,
+newest first.
+
+`error`, `blocker`, and `todo` are **typed refusals** (`invalid_params`),
+not empty lists. An empty list would be read by an agent as "nothing was
+recorded", which is a silent degradation; a refusal says the kind is not
+implemented. They become real answers when their data models exist.
+
 ### `fndr.remember_decision`
 
 The only write tool. Appends one row to `fndr-store::Store`'s append-only
@@ -95,7 +112,7 @@ touches ranking.
 ## Not yet implemented
 
 `fndr.context_pack`, `fndr.delta`, `fndr.active_focus`,
-`fndr.project_context`, `fndr.recall`, `fndr.graph_context`,
+`fndr.project_context`, `fndr.graph_context`,
 `fndr.open_target`, `fndr.explain_retrieval`, `fndr.feedback`, and the
 ratified P1 additions `fndr.answer` and `fndr.session_story`. See ADR-007
 for each tool's purpose and the Connected Planner amendment for

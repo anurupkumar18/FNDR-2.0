@@ -1,9 +1,10 @@
-//! The MCP surface (ADR-007). Five of the 14 founding tools are wired:
+//! The MCP surface (ADR-007). Six of the 14 founding tools are wired:
 //! `fndr.search` (over `fndr-retrieval::KeywordRetriever`, not ADR-007's full
 //! hybrid/filtered contract yet), `fndr.privacy_status`, `fndr.timeline`
 //! (activity counts only, never capture text), `fndr.source_evidence`
 //! (capture text behind an explicit `include_raw` gate that defaults
-//! closed), and `fndr.remember_decision` (the only write tool: appends to
+//! closed), `fndr.recall` (decisions only; unbacked kinds are refused, not
+//! answered empty), and `fndr.remember_decision` (the only write tool: appends to
 //! `fndr-store::Store::remember_decision`'s append-only ledger, never edits
 //! or removes). `fndr-store::Store` replaced the walking-skeleton
 //! `SkeletonStore` stand-in as of T-702.
@@ -148,6 +149,41 @@ pub struct SourceEvidenceOutput {
     /// Echoes whether raw text was included, so a caller never has to infer
     /// the gate's state from an absent field.
     pub raw_included: bool,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema, Default, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum RecallKind {
+    #[default]
+    Decision,
+    Error,
+    Blocker,
+    Todo,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema, Default)]
+pub struct RecallParams {
+    /// What to recall. Only `decision` is backed by data today; the others
+    /// are refused rather than answered with an empty list.
+    pub kind: RecallKind,
+    /// Only entries at or after this instant, unix ms.
+    pub since_ms: Option<i64>,
+    /// Maximum entries (default 20, capped at 200).
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct RecalledDecision {
+    pub id: i64,
+    pub decided_at_ms: f64,
+    pub statement: String,
+    pub record_id: Option<String>,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct RecallOutput {
+    pub kind: String,
+    pub decisions: Vec<RecalledDecision>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema, Default)]
@@ -338,6 +374,55 @@ impl FndrMcpServer {
                 })
                 .collect(),
             raw_included: include_raw,
+        }))
+    }
+
+    #[tool(
+        name = "fndr.recall",
+        description = "Recall decisions, errors, blockers, or todos. Only kind=decision has a data model today; the other kinds are refused explicitly rather than returning an empty list that reads as 'you have none'."
+    )]
+    pub fn recall(
+        &self,
+        Parameters(RecallParams {
+            kind,
+            since_ms,
+            limit,
+        }): Parameters<RecallParams>,
+    ) -> Result<Json<RecallOutput>, ErrorData> {
+        // Invariant 4: an unbacked kind is a visible refusal, never an empty
+        // success that an agent would report as "no errors were recorded".
+        let unbacked = match kind {
+            RecallKind::Decision => None,
+            RecallKind::Error => Some("error"),
+            RecallKind::Blocker => Some("blocker"),
+            RecallKind::Todo => Some("todo"),
+        };
+        if let Some(kind) = unbacked {
+            return Err(ErrorData::invalid_params(
+                format!("recall kind '{kind}' has no data model yet; only 'decision' is recorded"),
+                None,
+            ));
+        }
+
+        let limit = limit.unwrap_or(20).min(200) as usize;
+        let store = self
+            .store
+            .lock()
+            .map_err(|_| ErrorData::internal_error("store lock poisoned", None))?;
+        let decisions = store
+            .recent_decisions(since_ms, limit)
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        Ok(Json(RecallOutput {
+            kind: "decision".to_owned(),
+            decisions: decisions
+                .into_iter()
+                .map(|decision| RecalledDecision {
+                    id: decision.id,
+                    decided_at_ms: decision.decided_at_ms as f64,
+                    statement: decision.statement,
+                    record_id: decision.record_id,
+                })
+                .collect(),
         }))
     }
 
