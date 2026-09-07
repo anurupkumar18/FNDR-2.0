@@ -107,3 +107,35 @@ The implementation PR must add `docs/mcp.md` examples that execute against a
 dev server and prove: disabled mode hides planner resources; unauthenticated
 or wrongly scoped calls fail; draft approval cannot execute an action; and
 the two alpha capability ids reject arguments outside their narrow contracts.
+
+## Amendment (2026-09-06, implementation status)
+
+No decision changes here; this records what exists so the inventory above
+stays the source of record rather than an aspiration.
+
+Eight of the fourteen founding tools are implemented: `fndr.search`,
+`fndr.privacy_status`, `fndr.timeline`, `fndr.delta`,
+`fndr.source_evidence`, `fndr.open_target`, `fndr.recall`, and
+`fndr.remember_decision`. `docs/mcp.md` now exists and carries their
+per-tool contracts, so the versioning clause above points at a real file.
+
+Three gaps are open against this ADR's own requirements and are tracked in
+T-702's ledger row rather than silently carried:
+
+1. **No audit log.** Action item 1 pairs the first eight tools with the tool-call
+   audit log; the tools shipped and the audit log did not. This matters most
+   for `fndr.source_evidence` releasing raw text under `include_raw`, which
+   is exactly the event worth recording.
+2. **No per-tool rate limits.** `fndr-mcp::auth::RateWindow` is one global
+   window; the per-tool scoping this ADR chose option A partly to preserve
+   is not built.
+3. **No `time_window` shorthand.** The carried convention (shorthand string,
+   unix ms, or from/to object) is unimplemented; `fndr.timeline` and
+   `fndr.delta` take explicit unix-ms bounds. The shared parser is deferred
+   until a second tool needs it rather than built speculatively for one.
+
+Two implemented tools are narrower than their table entry: `fndr.search` is
+a plain FTS5 keyword route with no hybrid ranking, filters, or surfacing
+reasons, and `fndr.recall` backs only its `decision` kind, refusing
+`error`/`blocker`/`todo` with a typed error rather than returning an empty
+list that reads as "you have none".
