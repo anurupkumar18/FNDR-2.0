@@ -403,6 +403,19 @@ Rule: when adding a heavy dependency, say so in the PR body, expect the
 first run to bust the budget once, and verify the cached follow-up run
 returns under it.
 
+## 2026-09-06 · `make test | tail` reports the pipe's exit code, not make's
+Cost: a full gate re-run, and a few minutes believing a green gate that had
+not been verified.
+Root cause: `make test 2>&1 | tail -150` exits with `tail`'s status, which is
+0 whether or not `make` failed. The truncation also cut the failing crate's
+output out of the saved log, so neither the exit code nor the text showed
+the failure.
+Rule: run the gate as `make test > /tmp/gate.log 2>&1; echo "EXIT=$?"` and
+grep the full log, rather than piping it through `tail`/`head`. Beware the
+mirror-image trap when checking: a trailing `grep -c FAILED` that finds
+nothing exits 1 and makes a green run look failed. An exit code you did not
+actually read is not a verification.
+
 ## 2026-09-06 · Nanosecond timestamps are not a per-thread unique ID
 Cost: an intermittent `make test` failure (`Lance(TableAlreadyExists)`)
 across two unrelated `capture_scheduler` tests, misdiagnosed at first as
