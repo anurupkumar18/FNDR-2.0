@@ -15,6 +15,28 @@ for the regression tests that pin this. Today's rate limiting is a single
 global window (`fndr_mcp::auth::RateWindow`), not yet scoped per tool —
 ADR-007's "per-tool rate limits" goal is still open.
 
+## The audit log
+
+Every tool call is recorded locally in SQLite's `mcp_audit` table: when,
+which tool, whether it succeeded or was refused, and whether it released
+raw capture text. Nothing else — no query string, no record id, no capture
+content. An audit log that copies what it audits becomes a second store of
+the same sensitive text.
+
+Auditing is structural, not a convention: each `#[tool]` method is a thin
+wrapper that routes its result through `FndrMcpServer::audit`, so no return
+path can skip it, and a test asserts the set of tools that wrote audit
+entries equals the set the router has registered. Adding a tool without
+auditing it fails that test.
+
+Read it with `FndrMcpServer::recent_tool_calls`. That is deliberately not
+an MCP tool: the audit log is for the person who owns the machine, not for
+the agents being audited by it.
+
+Auth denials are logged separately, through `tracing` on the
+`fndr_mcp::audit` target, because they are rejected before any handler and
+therefore before any tool name is known.
+
 ## Implemented tools
 
 ### `fndr.search`

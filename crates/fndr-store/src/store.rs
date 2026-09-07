@@ -160,6 +160,18 @@ pub struct ChangeSummary {
     pub apps: Vec<AppChange>,
 }
 
+/// One recorded MCP tool call. Deliberately carries no query text, record
+/// id, or capture content: an audit log that copies what it audits becomes a
+/// second store of the same sensitive text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuditEntry {
+    pub id: i64,
+    pub at_ms: i64,
+    pub tool: String,
+    pub outcome: String,
+    pub raw_released: bool,
+}
+
 /// One entry read back from the append-only decision ledger.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LedgerDecision {
@@ -593,6 +605,46 @@ impl Store {
         }))
     }
 
+    /// Record one MCP tool call. `raw_released` marks the calls that handed
+    /// back stored capture text, which is the event a person most needs to
+    /// see when they open their audit log.
+    pub fn record_tool_call(
+        &self,
+        at_ms: i64,
+        tool: &str,
+        outcome: &str,
+        raw_released: bool,
+    ) -> Result<(), StoreError> {
+        self.conn.execute(
+            "INSERT INTO mcp_audit (at_ms, tool, outcome, raw_released)
+             VALUES (?1, ?2, ?3, ?4)",
+            (at_ms, tool, outcome, raw_released),
+        )?;
+        Ok(())
+    }
+
+    /// Read recorded tool calls, newest first.
+    pub fn recent_tool_calls(&self, limit: usize) -> Result<Vec<AuditEntry>, StoreError> {
+        let mut statement = self.conn.prepare(
+            "SELECT id, at_ms, tool, outcome, raw_released
+             FROM mcp_audit
+             ORDER BY at_ms DESC, id DESC
+             LIMIT ?1",
+        )?;
+        let rows = statement
+            .query_map([limit as i64], |row| {
+                Ok(AuditEntry {
+                    id: row.get(0)?,
+                    at_ms: row.get(1)?,
+                    tool: row.get(2)?,
+                    outcome: row.get(3)?,
+                    raw_released: row.get(4)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
     /// Summarize captures at or after `since_ms`: how many, the newest
     /// instant, and the busiest apps. Counts only, so a caller can poll this
     /// repeatedly without moving any capture content.
@@ -735,6 +787,7 @@ mod tests {
             "settings",
             "devices",
             "tokens",
+            "mcp_audit",
         ] {
             let count: i64 = store
                 .conn()
@@ -1061,6 +1114,27 @@ mod tests {
     fn record_evidence_for_an_unknown_record_is_none_not_an_error() {
         let store = Store::open_in_memory().unwrap();
         assert!(store.record_evidence("missing").unwrap().is_none());
+    }
+
+    #[test]
+    fn recorded_tool_calls_come_back_newest_first_with_the_raw_release_flag() {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .record_tool_call(1_000, "fndr.search", "ok", false)
+            .unwrap();
+        store
+            .record_tool_call(2_000, "fndr.source_evidence", "ok", true)
+            .unwrap();
+
+        let entries = store.recent_tool_calls(10).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].tool, "fndr.source_evidence");
+        assert!(
+            entries[0].raw_released,
+            "a raw-text release must be visible in the audit log"
+        );
+        assert_eq!(entries[1].tool, "fndr.search");
+        assert!(!entries[1].raw_released);
     }
 
     #[test]

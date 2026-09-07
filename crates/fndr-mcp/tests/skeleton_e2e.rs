@@ -2,6 +2,8 @@
 //! goes through real Vision OCR, lands in the store, and comes back out of
 //! the same search call the fndr.search tool serves.
 
+use std::collections::BTreeSet;
+
 use fndr_capture::{FrameSource, PngFileSource};
 use fndr_mcp::{
     DeltaParams, FndrMcpServer, OpenTargetParams, PrivacyStatusParams, RecallKind, RecallParams,
@@ -386,6 +388,100 @@ fn recall_refuses_kinds_that_have_no_data_model_instead_of_answering_empty() {
             "an unbacked kind must refuse, not report 'you have none'"
         );
     }
+}
+
+/// Calls every registered tool once, then asserts the audit log saw all of
+/// them. Adding a ninth tool without routing it through `audit` fails here,
+/// which is the point: an audit gap is invisible in production.
+#[test]
+fn every_registered_tool_writes_an_audit_entry() {
+    let server = FndrMcpServer::new(store_with_one_record("body"));
+
+    let _ = server.search(Parameters(SearchParams {
+        query: "body".into(),
+        limit: None,
+    }));
+    let _ = server.privacy_status(Parameters(PrivacyStatusParams {}));
+    let _ = server.timeline(Parameters(TimelineParams {
+        from_ms: 0,
+        to_ms: 1_000,
+        granularity: None,
+        utc_offset_minutes: None,
+        limit: None,
+    }));
+    let _ = server.delta(Parameters(DeltaParams {
+        since_ms: 0,
+        app_limit: None,
+    }));
+    let _ = server.source_evidence(Parameters(SourceEvidenceParams {
+        record_id: "r1".into(),
+        include_raw: Some(true),
+    }));
+    let _ = server.open_target(Parameters(OpenTargetParams {
+        record_id: "r1".into(),
+    }));
+    let _ = server.recall(Parameters(RecallParams {
+        kind: RecallKind::Decision,
+        since_ms: None,
+        limit: None,
+    }));
+    let _ = server.remember_decision(Parameters(RememberDecisionParams {
+        statement: "audited".into(),
+        record_id: None,
+        decided_at_ms: None,
+    }));
+
+    let audited: BTreeSet<String> = server
+        .recent_tool_calls(100)
+        .expect("audit readable")
+        .into_iter()
+        .map(|entry| entry.tool)
+        .collect();
+    let registered: BTreeSet<String> = FndrMcpServer::registered_tool_names().into_iter().collect();
+
+    assert_eq!(
+        audited, registered,
+        "every registered tool must write an audit entry; a new tool needs its audit wrapper"
+    );
+}
+
+#[test]
+fn the_audit_log_marks_a_raw_release_and_a_refusal() {
+    let server = FndrMcpServer::new(store_with_one_record("body"));
+
+    server
+        .source_evidence(Parameters(SourceEvidenceParams {
+            record_id: "r1".into(),
+            include_raw: Some(true),
+        }))
+        .expect("released");
+    server
+        .source_evidence(Parameters(SourceEvidenceParams {
+            record_id: "r1".into(),
+            include_raw: None,
+        }))
+        .expect("withheld");
+    let _ = server.source_evidence(Parameters(SourceEvidenceParams {
+        record_id: "missing".into(),
+        include_raw: Some(true),
+    }));
+
+    let entries = server.recent_tool_calls(100).expect("audit readable");
+    let evidence: Vec<_> = entries
+        .iter()
+        .filter(|e| e.tool == "fndr.source_evidence")
+        .collect();
+    assert_eq!(evidence.len(), 3, "refusals are audited too");
+
+    let released = evidence.iter().filter(|e| e.raw_released).count();
+    assert_eq!(
+        released, 1,
+        "only the call that actually returned text counts as a raw release"
+    );
+    assert_eq!(
+        evidence.iter().filter(|e| e.outcome == "refused").count(),
+        1
+    );
 }
 
 #[test]

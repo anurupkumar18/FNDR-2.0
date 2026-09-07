@@ -119,13 +119,16 @@ Eight of the fourteen founding tools are implemented: `fndr.search`,
 `fndr.remember_decision`. `docs/mcp.md` now exists and carries their
 per-tool contracts, so the versioning clause above points at a real file.
 
-Three gaps are open against this ADR's own requirements and are tracked in
-T-702's ledger row rather than silently carried:
+Gaps against this ADR's own requirements, tracked in T-702's ledger row
+rather than silently carried:
 
-1. **No audit log.** Action item 1 pairs the first eight tools with the tool-call
-   audit log; the tools shipped and the audit log did not. This matters most
-   for `fndr.source_evidence` releasing raw text under `include_raw`, which
-   is exactly the event worth recording.
+1. **The audit log now exists** (added the same day this amendment was
+   written). Migration 0005's `mcp_audit` table records tool, outcome, and
+   whether raw capture text was released, and deliberately nothing else:
+   no query string, record id, or capture content. Auditing is structural
+   rather than per-handler discipline, and a test pins the audited tool set
+   to the router's registered set. Still open: retention for that table and
+   a UI surface for T-902's "one-click audit log" moment.
 2. **No per-tool rate limits.** `fndr-mcp::auth::RateWindow` is one global
    window; the per-tool scoping this ADR chose option A partly to preserve
    is not built.

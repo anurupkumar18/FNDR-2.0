@@ -32,7 +32,7 @@ use serde::{Deserialize, Serialize};
 
 use fndr_privacy::Blocklist;
 use fndr_retrieval::KeywordRetriever;
-use fndr_store::{Store, TimelineGranularity};
+use fndr_store::{AuditEntry, Store, TimelineGranularity};
 
 use crate::auth::{AuthConfig, RateWindow, check_request};
 
@@ -263,6 +263,58 @@ pub struct FndrMcpServer {
     blocklist: Blocklist,
 }
 
+impl FndrMcpServer {
+    /// Record one tool call's outcome. Every `#[tool]` method routes its
+    /// result through here, so no return path can skip the audit log: the
+    /// wrappers exist for that reason and not for style.
+    ///
+    /// A failed audit write fails the call. For `fndr.remember_decision`
+    /// that means an appended decision can be reported as an error, and a
+    /// retry appends a second entry. That is deliberate: a duplicate ledger
+    /// row is visible to its owner and an unaudited write is not.
+    /// Every tool name this server actually exposes, read from the router
+    /// rather than a hand-maintained list, so callers (and the audit
+    /// coverage test) cannot drift from the real surface.
+    pub fn registered_tool_names() -> Vec<String> {
+        Self::tool_router()
+            .list_all()
+            .into_iter()
+            .map(|tool| tool.name.to_string())
+            .collect()
+    }
+
+    /// Read the local audit log, newest first. Not an MCP tool: the audit
+    /// log is for the person who owns the machine, not for the agents being
+    /// audited by it.
+    pub fn recent_tool_calls(&self, limit: usize) -> Result<Vec<AuditEntry>, ErrorData> {
+        let store = self
+            .store
+            .lock()
+            .map_err(|_| ErrorData::internal_error("store lock poisoned", None))?;
+        store
+            .recent_tool_calls(limit)
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))
+    }
+
+    fn audit<T>(
+        &self,
+        tool: &str,
+        raw_released: bool,
+        result: Result<T, ErrorData>,
+    ) -> Result<T, ErrorData> {
+        let raw_released = raw_released && result.is_ok();
+        let outcome = if result.is_ok() { "ok" } else { "refused" };
+        let store = self
+            .store
+            .lock()
+            .map_err(|_| ErrorData::internal_error("store lock poisoned", None))?;
+        store
+            .record_tool_call(now_ms(), tool, outcome, raw_released)
+            .map_err(|e| ErrorData::internal_error(format!("audit write failed: {e}"), None))?;
+        result
+    }
+}
+
 #[tool_router(server_handler)]
 impl FndrMcpServer {
     pub fn new(store: Store) -> Self {
@@ -281,6 +333,15 @@ impl FndrMcpServer {
         description = "Full-text search over the local FNDR screen memory. Returns matching records with highlighted snippets, most relevant first."
     )]
     pub fn search(
+        &self,
+        Parameters(params): Parameters<SearchParams>,
+    ) -> Result<Json<SearchOutput>, ErrorData> {
+        let raw_released = false;
+        let result = self.search_inner(Parameters(params));
+        self.audit("fndr.search", raw_released, result)
+    }
+
+    fn search_inner(
         &self,
         Parameters(SearchParams { query, limit }): Parameters<SearchParams>,
     ) -> Result<Json<SearchOutput>, ErrorData> {
@@ -312,6 +373,15 @@ impl FndrMcpServer {
     )]
     pub fn privacy_status(
         &self,
+        Parameters(params): Parameters<PrivacyStatusParams>,
+    ) -> Result<Json<PrivacyStatusOutput>, ErrorData> {
+        let raw_released = false;
+        let result = self.privacy_status_inner(Parameters(params));
+        self.audit("fndr.privacy_status", raw_released, result)
+    }
+
+    fn privacy_status_inner(
+        &self,
         Parameters(PrivacyStatusParams {}): Parameters<PrivacyStatusParams>,
     ) -> Result<Json<PrivacyStatusOutput>, ErrorData> {
         Ok(Json(PrivacyStatusOutput {
@@ -328,6 +398,15 @@ impl FndrMcpServer {
         description = "Grouped chronological activity: which apps were active, in which time buckets, over a window. Returns counts only, never capture text."
     )]
     pub fn timeline(
+        &self,
+        Parameters(params): Parameters<TimelineParams>,
+    ) -> Result<Json<TimelineOutput>, ErrorData> {
+        let raw_released = false;
+        let result = self.timeline_inner(Parameters(params));
+        self.audit("fndr.timeline", raw_released, result)
+    }
+
+    fn timeline_inner(
         &self,
         Parameters(TimelineParams {
             from_ms,
@@ -393,6 +472,15 @@ impl FndrMcpServer {
     )]
     pub fn source_evidence(
         &self,
+        Parameters(params): Parameters<SourceEvidenceParams>,
+    ) -> Result<Json<SourceEvidenceOutput>, ErrorData> {
+        let raw_released = params.include_raw.unwrap_or(false);
+        let result = self.source_evidence_inner(Parameters(params));
+        self.audit("fndr.source_evidence", raw_released, result)
+    }
+
+    fn source_evidence_inner(
+        &self,
         Parameters(SourceEvidenceParams {
             record_id,
             include_raw,
@@ -436,6 +524,15 @@ impl FndrMcpServer {
     )]
     pub fn delta(
         &self,
+        Parameters(params): Parameters<DeltaParams>,
+    ) -> Result<Json<DeltaOutput>, ErrorData> {
+        let raw_released = false;
+        let result = self.delta_inner(Parameters(params));
+        self.audit("fndr.delta", raw_released, result)
+    }
+
+    fn delta_inner(
+        &self,
         Parameters(DeltaParams {
             since_ms,
             app_limit,
@@ -469,6 +566,15 @@ impl FndrMcpServer {
         description = "Resolve one memory to something reopenable: the page's sanitized URL, or the app it was captured from. A memory with neither returns an explicit unavailable state with a reason."
     )]
     pub fn open_target(
+        &self,
+        Parameters(params): Parameters<OpenTargetParams>,
+    ) -> Result<Json<OpenTargetOutput>, ErrorData> {
+        let raw_released = false;
+        let result = self.open_target_inner(Parameters(params));
+        self.audit("fndr.open_target", raw_released, result)
+    }
+
+    fn open_target_inner(
         &self,
         Parameters(OpenTargetParams { record_id }): Parameters<OpenTargetParams>,
     ) -> Result<Json<OpenTargetOutput>, ErrorData> {
@@ -507,6 +613,15 @@ impl FndrMcpServer {
         description = "Recall decisions, errors, blockers, or todos. Only kind=decision has a data model today; the other kinds are refused explicitly rather than returning an empty list that reads as 'you have none'."
     )]
     pub fn recall(
+        &self,
+        Parameters(params): Parameters<RecallParams>,
+    ) -> Result<Json<RecallOutput>, ErrorData> {
+        let raw_released = false;
+        let result = self.recall_inner(Parameters(params));
+        self.audit("fndr.recall", raw_released, result)
+    }
+
+    fn recall_inner(
         &self,
         Parameters(RecallParams {
             kind,
@@ -556,6 +671,15 @@ impl FndrMcpServer {
         description = "The only write tool: appends one entry to the local, append-only decision ledger. Never edits or removes prior entries and never mutates ranking."
     )]
     pub fn remember_decision(
+        &self,
+        Parameters(params): Parameters<RememberDecisionParams>,
+    ) -> Result<Json<RememberDecisionOutput>, ErrorData> {
+        let raw_released = false;
+        let result = self.remember_decision_inner(Parameters(params));
+        self.audit("fndr.remember_decision", raw_released, result)
+    }
+
+    fn remember_decision_inner(
         &self,
         Parameters(RememberDecisionParams {
             statement,
