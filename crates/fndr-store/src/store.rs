@@ -605,6 +605,20 @@ impl Store {
         }))
     }
 
+    /// The id of the most recently captured record, if any. Kept separate
+    /// from `record_evidence` so callers compose the two rather than growing
+    /// a second "read a record" path.
+    pub fn latest_record_id(&self) -> Result<Option<String>, StoreError> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT id FROM memory_records ORDER BY captured_at_ms DESC, id DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?)
+    }
+
     /// Record one MCP tool call. `raw_released` marks the calls that handed
     /// back stored capture text, which is the event a person most needs to
     /// see when they open their audit log.
@@ -1114,6 +1128,22 @@ mod tests {
     fn record_evidence_for_an_unknown_record_is_none_not_an_error() {
         let store = Store::open_in_memory().unwrap();
         assert!(store.record_evidence("missing").unwrap().is_none());
+    }
+
+    #[test]
+    fn latest_record_id_tracks_the_newest_capture_and_is_none_when_empty() {
+        let store = Store::open_in_memory().unwrap();
+        assert!(store.latest_record_id().unwrap().is_none());
+
+        insert_record_at(&store, "older", "Safari", 1_000);
+        insert_record_at(&store, "newest", "Terminal", 3_000);
+        insert_record_at(&store, "middle", "Notes", 2_000);
+
+        assert_eq!(
+            store.latest_record_id().unwrap().as_deref(),
+            Some("newest"),
+            "newest by capture time, not by insertion order"
+        );
     }
 
     #[test]

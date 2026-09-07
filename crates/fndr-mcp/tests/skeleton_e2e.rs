@@ -6,8 +6,9 @@ use std::collections::BTreeSet;
 
 use fndr_capture::{FrameSource, PngFileSource};
 use fndr_mcp::{
-    DeltaParams, FndrMcpServer, OpenTargetParams, PrivacyStatusParams, RecallKind, RecallParams,
-    RememberDecisionParams, SearchParams, SourceEvidenceParams, TimelineGrain, TimelineParams,
+    ActiveFocusParams, DeltaParams, FndrMcpServer, OpenTargetParams, PrivacyStatusParams,
+    RecallKind, RecallParams, RememberDecisionParams, SearchParams, SourceEvidenceParams,
+    TimelineGrain, TimelineParams,
 };
 use fndr_ocr::OcrEngine;
 use fndr_privacy::Blocklist;
@@ -233,6 +234,52 @@ fn remember_decision_appends_and_rejects_an_empty_statement() {
 }
 
 #[test]
+fn active_focus_distinguishes_none_from_stale_from_current() {
+    let empty = FndrMcpServer::new(Store::open_in_memory().unwrap());
+    let nothing = empty
+        .active_focus(Parameters(ActiveFocusParams {
+            stale_after_ms: None,
+        }))
+        .expect("tool call")
+        .0;
+    assert_eq!(nothing.status, "none");
+    assert!(nothing.app_name.is_none(), "no capture, no claim about one");
+
+    // store_with_one_record captures at epoch 42, which is decades stale.
+    let old = FndrMcpServer::new(store_with_one_record("body"));
+    let stale = old
+        .active_focus(Parameters(ActiveFocusParams {
+            stale_after_ms: None,
+        }))
+        .expect("tool call")
+        .0;
+    assert_eq!(
+        stale.status, "stale",
+        "an ancient capture must not be reported as current focus"
+    );
+    assert_eq!(stale.app_name.as_deref(), Some("Safari"));
+    assert!(stale.age_ms.expect("aged") > 0.0);
+
+    // The same observation is 'active' once the caller's tolerance covers it.
+    let generous = old
+        .active_focus(Parameters(ActiveFocusParams {
+            stale_after_ms: Some(i64::MAX),
+        }))
+        .expect("tool call")
+        .0;
+    assert_eq!(generous.status, "active");
+}
+
+#[test]
+fn active_focus_refuses_a_negative_staleness_window() {
+    let server = FndrMcpServer::new(store_with_one_record("body"));
+    let result = server.active_focus(Parameters(ActiveFocusParams {
+        stale_after_ms: Some(-1),
+    }));
+    assert!(result.is_err());
+}
+
+#[test]
 fn delta_reports_counts_and_its_cursor_makes_the_next_poll_empty() {
     let secret = "a private sentence that must not appear in a delta";
     let server = FndrMcpServer::new(store_with_one_record(secret));
@@ -412,6 +459,9 @@ fn every_registered_tool_writes_an_audit_entry() {
     let _ = server.delta(Parameters(DeltaParams {
         since_ms: 0,
         app_limit: None,
+    }));
+    let _ = server.active_focus(Parameters(ActiveFocusParams {
+        stale_after_ms: None,
     }));
     let _ = server.source_evidence(Parameters(SourceEvidenceParams {
         record_id: "r1".into(),

@@ -1,8 +1,9 @@
-//! The MCP surface (ADR-007). Eight of the 14 founding tools are wired:
+//! The MCP surface (ADR-007). Nine of the 14 founding tools are wired:
 //! `fndr.search` (over `fndr-retrieval::KeywordRetriever`, not ADR-007's full
 //! hybrid/filtered contract yet), `fndr.privacy_status`, `fndr.timeline`
 //! and `fndr.delta` (both counts only, never capture text),
-//! `fndr.source_evidence`
+//! `fndr.active_focus` (newest capture plus its age and a typed staleness
+//! status), `fndr.source_evidence`
 //! (capture text behind an explicit `include_raw` gate that defaults
 //! closed), `fndr.open_target` (sanitized URL or app, else an explicit
 //! unavailable state), `fndr.recall` (decisions only; unbacked kinds are refused, not
@@ -151,6 +152,36 @@ pub struct SourceEvidenceOutput {
     /// Echoes whether raw text was included, so a caller never has to infer
     /// the gate's state from an absent field.
     pub raw_included: bool,
+}
+
+/// How old the newest capture may be before `fndr.active_focus` stops
+/// calling it current. Matches `fndr-capture`'s deep-idle threshold: past
+/// five minutes of no input the sampler itself stops believing the screen
+/// represents what someone is doing.
+pub const DEFAULT_STALE_AFTER_MS: i64 = 5 * 60 * 1_000;
+
+#[derive(Debug, Deserialize, schemars::JsonSchema, Default)]
+pub struct ActiveFocusParams {
+    /// Age past which the newest capture is reported `stale` instead of
+    /// `active`. Defaults to five minutes.
+    pub stale_after_ms: Option<i64>,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct ActiveFocusOutput {
+    /// `active`, `stale`, or `none`. Never a bare app name that a caller
+    /// could report as "currently" true when the observation is hours old.
+    pub status: String,
+    pub app_name: Option<String>,
+    pub window_title: Option<String>,
+    pub url: Option<String>,
+    pub bundle_id: Option<String>,
+    pub record_id: Option<String>,
+    pub captured_at_ms: Option<f64>,
+    /// How old the observation is, so staleness is measurable and not just
+    /// a label.
+    pub age_ms: Option<f64>,
+    pub stale_after_ms: f64,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema, Default)]
@@ -515,6 +546,76 @@ impl FndrMcpServer {
                 })
                 .collect(),
             raw_included: include_raw,
+        }))
+    }
+
+    #[tool(
+        name = "fndr.active_focus",
+        description = "What the newest capture says someone was doing, with its age and whether it is recent enough to still call current. Returns status 'none' when nothing has been captured."
+    )]
+    pub fn active_focus(
+        &self,
+        Parameters(params): Parameters<ActiveFocusParams>,
+    ) -> Result<Json<ActiveFocusOutput>, ErrorData> {
+        let raw_released = false;
+        let result = self.active_focus_inner(Parameters(params));
+        self.audit("fndr.active_focus", raw_released, result)
+    }
+
+    fn active_focus_inner(
+        &self,
+        Parameters(ActiveFocusParams { stale_after_ms }): Parameters<ActiveFocusParams>,
+    ) -> Result<Json<ActiveFocusOutput>, ErrorData> {
+        let stale_after_ms = stale_after_ms.unwrap_or(DEFAULT_STALE_AFTER_MS);
+        if stale_after_ms < 0 {
+            return Err(ErrorData::invalid_params(
+                "stale_after_ms must not be negative",
+                None,
+            ));
+        }
+        let store = self
+            .store
+            .lock()
+            .map_err(|_| ErrorData::internal_error("store lock poisoned", None))?;
+        let latest = store
+            .latest_record_id()
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        let evidence = match latest {
+            Some(record_id) => store
+                .record_evidence(&record_id)
+                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?,
+            None => None,
+        };
+        let Some(evidence) = evidence else {
+            return Ok(Json(ActiveFocusOutput {
+                status: "none".to_owned(),
+                app_name: None,
+                window_title: None,
+                url: None,
+                bundle_id: None,
+                record_id: None,
+                captured_at_ms: None,
+                age_ms: None,
+                stale_after_ms: stale_after_ms as f64,
+            }));
+        };
+
+        // A clock that has moved backwards must not read as a fresh capture.
+        let age_ms = now_ms().saturating_sub(evidence.captured_at_ms).max(0);
+        Ok(Json(ActiveFocusOutput {
+            status: if age_ms > stale_after_ms {
+                "stale".to_owned()
+            } else {
+                "active".to_owned()
+            },
+            app_name: Some(evidence.app_name),
+            window_title: Some(evidence.window_title),
+            url: evidence.url,
+            bundle_id: evidence.bundle_id,
+            record_id: Some(evidence.record_id),
+            captured_at_ms: Some(evidence.captured_at_ms as f64),
+            age_ms: Some(age_ms as f64),
+            stale_after_ms: stale_after_ms as f64,
         }))
     }
 

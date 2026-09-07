@@ -5,7 +5,7 @@ The canonical tool set and its rationale live in
 P1 additions). This document is the per-tool contract for tools that are
 actually implemented; it grows one entry per tool as each lands, per
 ADR-007's tool-addition rule (use case, schema round-trip test,
-auth-failure test, rate limit, docs entry). Eight of the fourteen are
+auth-failure test, rate limit, docs entry). Nine of the fourteen are
 implemented today.
 
 Transport, auth, and posture (bearer token, Origin/Host allowlist, rate
@@ -83,6 +83,27 @@ a complete one. `to_ms` before `from_ms`, or an offset outside
 ADR-007's flexible `time_window` shorthand (`"today"`, `"7d"`, from/to
 object) is **not** implemented; this tool takes explicit unix-ms bounds.
 The shared parser lands when a second tool needs it.
+
+### `fndr.active_focus`
+
+What the newest capture says someone was doing, with its age and whether
+it is recent enough to still be called current.
+
+**Params:** `{ stale_after_ms?: number }`, defaulting to five minutes —
+`fndr-capture`'s deep-idle threshold, past which the sampler itself stops
+believing the screen represents what someone is doing.
+
+**Result:** `{ status, app_name?, window_title?, url?, bundle_id?, record_id?, captured_at_ms?, age_ms?, stale_after_ms }`.
+
+`status` is `active`, `stale`, or `none`. It exists so a caller cannot
+report a three-hour-old observation as what someone is "currently" doing:
+`none` means nothing has ever been captured, and `stale` means there is an
+observation but it is older than the caller's own tolerance. `age_ms`
+makes that measurable rather than just labelled. A negative
+`stale_after_ms` is a typed refusal.
+
+Project and task inference, which ADR-007's entry also names, are not
+implemented — neither has a data model.
 
 ### `fndr.delta`
 
@@ -164,8 +185,7 @@ touches ranking.
 
 ## Not yet implemented
 
-`fndr.context_pack`, `fndr.active_focus`,
-`fndr.project_context`, `fndr.graph_context`,
+`fndr.context_pack`, `fndr.project_context`, `fndr.graph_context`,
 `fndr.explain_retrieval`, `fndr.feedback`, and the
 ratified P1 additions `fndr.answer` and `fndr.session_story`. See ADR-007
 for each tool's purpose and the Connected Planner amendment for
