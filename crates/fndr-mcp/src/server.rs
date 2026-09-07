@@ -22,7 +22,9 @@
 //! take a window take explicit unix-ms bounds until a second caller needs
 //! the shared parser.
 
+use std::collections::HashSet;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -42,6 +44,13 @@ use fndr_retrieval::KeywordRetriever;
 use fndr_store::{AuditEntry, Store, TimelineGranularity};
 
 use crate::auth::{AuthConfig, RateWindow, check_request};
+
+/// Runs a future to completion from inside a synchronous method that is
+/// itself already called from within a tokio runtime (every `#[tool]`
+/// handler is).
+fn block_on_from_sync<F: std::future::Future>(future: F) -> F::Output {
+    tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(future))
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum ServeError {
@@ -64,11 +73,20 @@ pub struct SearchHitOut {
     pub source: String,
     pub captured_at_ms: f64,
     pub snippet: String,
+    /// Which route produced this hit: "keyword" or "vector". A hit found by
+    /// both routes reports "keyword" (its snippet carries real match
+    /// markers; the vector route's does not).
+    pub route: String,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub struct SearchOutput {
     pub hits: Vec<SearchHitOut>,
+    /// True when this server was constructed with a query-side embedder and
+    /// Lance index directory, so a caller can tell "no semantic results"
+    /// apart from "semantic search wasn't even attempted" (invariant 4: no
+    /// silent degradation).
+    pub vector_route_available: bool,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema, Default)]
@@ -416,6 +434,12 @@ pub struct FndrMcpServer {
     // engine gets a proper connection strategy with T-201.
     store: Arc<Mutex<Store>>,
     blocklist: Blocklist,
+    // Both present or both absent — never partially configured. Absent
+    // means the server was built without a model, a typed, visible state
+    // (SearchOutput.vector_route_available), never a silent skip. Set via
+    // `with_vector_route`, which `fndr-mcp`'s CLI calls when launched with
+    // `--model`/`--index-dir` (see that constructor's doc comment).
+    vector_route: Option<(Arc<dyn fndr_inference::Embedder>, PathBuf)>,
 }
 
 impl FndrMcpServer {
@@ -481,6 +505,25 @@ impl FndrMcpServer {
         Self {
             store: Arc::new(Mutex::new(store)),
             blocklist,
+            vector_route: None,
+        }
+    }
+
+    /// Like `with_blocklist`, plus a query-side embedder and the Lance index
+    /// directory it should query. `fndr-mcp`'s CLI entrypoint calls this
+    /// when launched with `--model`/`--index-dir`; every other caller
+    /// (including all existing tests) keeps using `new`/`with_blocklist`
+    /// unchanged.
+    pub fn with_vector_route(
+        store: Store,
+        blocklist: Blocklist,
+        embedder: Arc<dyn fndr_inference::Embedder>,
+        index_dir: PathBuf,
+    ) -> Self {
+        Self {
+            store: Arc::new(Mutex::new(store)),
+            blocklist,
+            vector_route: Some((embedder, index_dir)),
         }
     }
 
@@ -502,15 +545,23 @@ impl FndrMcpServer {
         Parameters(SearchParams { query, limit }): Parameters<SearchParams>,
     ) -> Result<Json<SearchOutput>, ErrorData> {
         let limit = limit.unwrap_or(10).min(50) as usize;
-        let store = self
-            .store
-            .lock()
-            .map_err(|_| ErrorData::internal_error("store lock poisoned", None))?;
-        let hits = KeywordRetriever::new(&store)
-            .search(&query, limit)
-            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-        Ok(Json(SearchOutput {
-            hits: hits
+
+        // Keyword search under its own lock scope: the guard is dropped
+        // before the vector route (embedding inference plus Lance disk I/O)
+        // runs, so a concurrent MCP call is never blocked on that round
+        // trip waiting for a store lock it does not need.
+        let (mut hits, mut seen): (Vec<SearchHitOut>, HashSet<String>) = {
+            let store = self
+                .store
+                .lock()
+                .map_err(|_| ErrorData::internal_error("store lock poisoned", None))?;
+
+            let keyword_hits = KeywordRetriever::new(&store)
+                .search(&query, limit)
+                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+            let seen: HashSet<String> = keyword_hits.iter().map(|h| h.chunk_id.clone()).collect();
+            let hits: Vec<SearchHitOut> = keyword_hits
                 .into_iter()
                 .map(|h| SearchHitOut {
                     record_id: h.record_id,
@@ -518,8 +569,54 @@ impl FndrMcpServer {
                     source: h.source,
                     captured_at_ms: h.captured_at_ms as f64,
                     snippet: h.snippet,
+                    route: "keyword".to_owned(),
                 })
-                .collect(),
+                .collect();
+            (hits, seen)
+        };
+
+        let vector_route_available = self.vector_route.is_some();
+        if let Some((embedder, index_dir)) = &self.vector_route {
+            // No store lock held here: VectorRetriever::search never
+            // touches `store`, only the snippet-building loop below does.
+            let vector_hits =
+                block_on_from_sync(fndr_retrieval::VectorRetriever::new(index_dir).search(
+                    &query,
+                    limit,
+                    embedder.as_ref(),
+                ))
+                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+            let new_hits: Vec<_> = vector_hits
+                .into_iter()
+                .filter(|hit| seen.insert(hit.chunk_id.clone()))
+                .collect();
+
+            if !new_hits.is_empty() {
+                // Re-acquire the lock only for the short span that builds
+                // snippets from the durable store.
+                let store = self
+                    .store
+                    .lock()
+                    .map_err(|_| ErrorData::internal_error("store lock poisoned", None))?;
+                for hit in new_hits {
+                    let snippet = vector_hit_snippet(&store, &hit).unwrap_or_default();
+                    hits.push(SearchHitOut {
+                        record_id: hit.record_id,
+                        chunk_id: hit.chunk_id,
+                        source: hit.source,
+                        captured_at_ms: hit.captured_at_ms as f64,
+                        snippet,
+                        route: "vector".to_owned(),
+                    });
+                }
+            }
+        }
+        hits.truncate(limit);
+
+        Ok(Json(SearchOutput {
+            hits,
+            vector_route_available,
         }))
     }
 
@@ -1142,6 +1239,25 @@ fn now_ms() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis() as i64)
         .unwrap_or(0)
+}
+
+/// A vector hit carries no FTS match markers (Lance rows have no text
+/// snippet), so this builds a plain truncated excerpt from the same
+/// durable store the keyword route reads, instead of returning an empty
+/// or fabricated snippet.
+fn vector_hit_snippet(store: &Store, hit: &fndr_retrieval::VectorHit) -> Option<String> {
+    const SNIPPET_CHARS: usize = 200;
+    let evidence = store.record_evidence(&hit.record_id).ok()??;
+    let chunk = evidence
+        .chunks
+        .into_iter()
+        .find(|c| c.chunk_id == hit.chunk_id)?;
+    if chunk.text.chars().count() <= SNIPPET_CHARS {
+        Some(chunk.text)
+    } else {
+        let truncated: String = chunk.text.chars().take(SNIPPET_CHARS).collect();
+        Some(format!("{truncated}…"))
+    }
 }
 
 struct AuthState {

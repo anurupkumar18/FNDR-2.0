@@ -158,7 +158,7 @@ pub fn semantic_signature(app_name: &str, window_title: &str, clean_text: &str) 
 
 fn average_rgb(rgba: &[u8]) -> [u8; 3] {
     let mut sums = [0_u64; 3];
-    for pixel in rgba.chunks_exact(SAMPLE_PIXEL_BYTES) {
+    for pixel in rgba.as_chunks::<SAMPLE_PIXEL_BYTES>().0 {
         for (index, value) in pixel[..3].iter().enumerate() {
             sums[index] += u64::from(*value);
         }
@@ -184,7 +184,7 @@ mod tests {
 
     fn solid_signature(rgb: [u8; 3]) -> PerceptualSignature {
         let mut rgba = [0_u8; SAMPLE_WIDTH * SAMPLE_HEIGHT * SAMPLE_PIXEL_BYTES];
-        for pixel in rgba.chunks_exact_mut(SAMPLE_PIXEL_BYTES) {
+        for pixel in rgba.as_chunks_mut::<SAMPLE_PIXEL_BYTES>().0 {
             pixel[..3].copy_from_slice(&rgb);
             pixel[3] = u8::MAX;
         }

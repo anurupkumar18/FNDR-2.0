@@ -56,6 +56,15 @@ ignore = [
     { id = "RUSTSEC-2025-0081", reason = "unic-* family, via urlpattern in tauri-utils" },
     { id = "RUSTSEC-2025-0098", reason = "unic-* family, via urlpattern in tauri-utils" },
     { id = "RUSTSEC-2025-0100", reason = "unic-* family, via urlpattern in tauri-utils" },
+    # transpose::transpose (via rustfft 3.0.1, pinned by rustdct 0.4.0, pinned
+    # by img_hash 3.2.0, its latest and only viable release) overflows when
+    # the caller passes width*height that wraps usize and happens to equal
+    # the output slice length. fndr-capture's only call site
+    # (crates/fndr-capture/src/dedup.rs) is `HasherConfig::new().hash_size(8,
+    # 8)`: a hardcoded 8x8 constant, never derived from captured frame
+    # content or any external input, nowhere near an overflow. Re-check if
+    # img_hash publishes past 3.2.0 or is replaced.
+    { id = "RUSTSEC-2023-0080", reason = "transpose via img_hash's pinned rustfft/rustdct; only call site uses a hardcoded 8x8 hash size, never attacker-influenced dimensions" },
 ]
 
 [sources]
