@@ -5,7 +5,7 @@ The canonical tool set and its rationale live in
 P1 additions). This document is the per-tool contract for tools that are
 actually implemented; it grows one entry per tool as each lands, per
 ADR-007's tool-addition rule (use case, schema round-trip test,
-auth-failure test, rate limit, docs entry). Six of the fourteen are
+auth-failure test, rate limit, docs entry). Seven of the fourteen are
 implemented today.
 
 Transport, auth, and posture (bearer token, Origin/Host allowlist, rate
@@ -79,6 +79,22 @@ without moving its content. `raw_included` echoes the gate's state so a
 caller never infers it from an absent field. An unknown `record_id` is a
 typed refusal (`invalid_params`), never an empty success.
 
+### `fndr.open_target`
+
+Resolve one memory to something reopenable, from the metadata the record
+already retained.
+
+**Params:** `{ record_id: string }`.
+
+**Result:** `{ record_id, kind, url?, bundle_id?, app_name, window_title, reason? }`.
+
+`kind` is `url` when the record kept a page URL, `app` when it kept only a
+bundle identifier, and `unavailable` when it kept neither — in which case
+`reason` says so rather than returning a blank target. Returned URLs are
+the sanitized ones the write path stored: credentials, query strings, and
+fragments never reached storage, so a reopened link is the page, not the
+session. An unknown `record_id` is a typed refusal.
+
 ### `fndr.recall`
 
 Recall structured knowledge by kind. Only `decision` has a data model
@@ -113,7 +129,7 @@ touches ranking.
 
 `fndr.context_pack`, `fndr.delta`, `fndr.active_focus`,
 `fndr.project_context`, `fndr.graph_context`,
-`fndr.open_target`, `fndr.explain_retrieval`, `fndr.feedback`, and the
+`fndr.explain_retrieval`, `fndr.feedback`, and the
 ratified P1 additions `fndr.answer` and `fndr.session_story`. See ADR-007
 for each tool's purpose and the Connected Planner amendment for
 `fndr.propose_action`.

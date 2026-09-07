@@ -1,9 +1,10 @@
-//! The MCP surface (ADR-007). Six of the 14 founding tools are wired:
+//! The MCP surface (ADR-007). Seven of the 14 founding tools are wired:
 //! `fndr.search` (over `fndr-retrieval::KeywordRetriever`, not ADR-007's full
 //! hybrid/filtered contract yet), `fndr.privacy_status`, `fndr.timeline`
 //! (activity counts only, never capture text), `fndr.source_evidence`
 //! (capture text behind an explicit `include_raw` gate that defaults
-//! closed), `fndr.recall` (decisions only; unbacked kinds are refused, not
+//! closed), `fndr.open_target` (sanitized URL or app, else an explicit
+//! unavailable state), `fndr.recall` (decisions only; unbacked kinds are refused, not
 //! answered empty), and `fndr.remember_decision` (the only write tool: appends to
 //! `fndr-store::Store::remember_decision`'s append-only ledger, never edits
 //! or removes). `fndr-store::Store` replaced the walking-skeleton
@@ -149,6 +150,29 @@ pub struct SourceEvidenceOutput {
     /// Echoes whether raw text was included, so a caller never has to infer
     /// the gate's state from an absent field.
     pub raw_included: bool,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema, Default)]
+pub struct OpenTargetParams {
+    /// A `record_id` from a `fndr.search` hit.
+    pub record_id: String,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct OpenTargetOutput {
+    pub record_id: String,
+    /// `url`, `app`, or `unavailable`. Never an empty string standing in for
+    /// "nothing to open".
+    pub kind: String,
+    /// Present for `url` targets. Already sanitized on the write path:
+    /// credentials, query strings, and fragments never reached storage.
+    pub url: Option<String>,
+    /// Present for `app` targets.
+    pub bundle_id: Option<String>,
+    pub app_name: String,
+    pub window_title: String,
+    /// Present for `unavailable`: why this memory cannot be reopened.
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema, Default, Clone, Copy, PartialEq, Eq)]
@@ -374,6 +398,44 @@ impl FndrMcpServer {
                 })
                 .collect(),
             raw_included: include_raw,
+        }))
+    }
+
+    #[tool(
+        name = "fndr.open_target",
+        description = "Resolve one memory to something reopenable: the page's sanitized URL, or the app it was captured from. A memory with neither returns an explicit unavailable state with a reason."
+    )]
+    pub fn open_target(
+        &self,
+        Parameters(OpenTargetParams { record_id }): Parameters<OpenTargetParams>,
+    ) -> Result<Json<OpenTargetOutput>, ErrorData> {
+        let store = self
+            .store
+            .lock()
+            .map_err(|_| ErrorData::internal_error("store lock poisoned", None))?;
+        let evidence = store
+            .record_evidence(&record_id)
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?
+            .ok_or_else(|| ErrorData::invalid_params("unknown record_id", None))?;
+
+        let (kind, url, bundle_id, reason) = match (&evidence.url, &evidence.bundle_id) {
+            (Some(url), _) => ("url", Some(url.clone()), evidence.bundle_id.clone(), None),
+            (None, Some(bundle_id)) => ("app", None, Some(bundle_id.clone()), None),
+            (None, None) => (
+                "unavailable",
+                None,
+                None,
+                Some("this memory retained no URL and no bundle identifier".to_owned()),
+            ),
+        };
+        Ok(Json(OpenTargetOutput {
+            record_id: evidence.record_id,
+            kind: kind.to_owned(),
+            url,
+            bundle_id,
+            app_name: evidence.app_name,
+            window_title: evidence.window_title,
+            reason,
         }))
     }
 

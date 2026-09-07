@@ -4,8 +4,8 @@
 
 use fndr_capture::{FrameSource, PngFileSource};
 use fndr_mcp::{
-    FndrMcpServer, PrivacyStatusParams, RecallKind, RecallParams, RememberDecisionParams,
-    SearchParams, SourceEvidenceParams, TimelineGrain, TimelineParams,
+    FndrMcpServer, OpenTargetParams, PrivacyStatusParams, RecallKind, RecallParams,
+    RememberDecisionParams, SearchParams, SourceEvidenceParams, TimelineGrain, TimelineParams,
 };
 use fndr_ocr::OcrEngine;
 use fndr_privacy::Blocklist;
@@ -228,6 +228,82 @@ fn remember_decision_appends_and_rejects_an_empty_statement() {
         decided_at_ms: None,
     }));
     assert!(rejected.is_err(), "an empty statement must not be recorded");
+}
+
+fn store_with_record(id: &str, bundle_id: Option<&str>, url: Option<&str>) -> Store {
+    let mut store = Store::open_in_memory().unwrap();
+    store
+        .insert_capture(
+            &NewRecord {
+                id: id.into(),
+                session_id: "s1".into(),
+                source: "screen".into(),
+                app_name: "Safari".into(),
+                bundle_id: bundle_id.map(Into::into),
+                url: url.and_then(fndr_privacy::sanitize_url_for_storage),
+                window_title: "release notes".into(),
+                captured_at_ms: 42,
+                created_at_ms: 42,
+            },
+            &[NewChunk {
+                id: format!("{id}-0"),
+                ord: 0,
+                text: "body".into(),
+            }],
+        )
+        .unwrap();
+    store
+}
+
+#[test]
+fn open_target_prefers_a_url_then_an_app_then_says_why_it_cannot() {
+    let with_url = FndrMcpServer::new(store_with_record(
+        "r1",
+        Some("com.apple.Safari"),
+        Some("https://example.com/notes"),
+    ));
+    let url_target = with_url
+        .open_target(Parameters(OpenTargetParams {
+            record_id: "r1".into(),
+        }))
+        .expect("tool call")
+        .0;
+    assert_eq!(url_target.kind, "url");
+    assert_eq!(url_target.url.as_deref(), Some("https://example.com/notes"));
+    assert!(url_target.reason.is_none());
+
+    let app_only = FndrMcpServer::new(store_with_record("r1", Some("com.apple.Safari"), None));
+    let app_target = app_only
+        .open_target(Parameters(OpenTargetParams {
+            record_id: "r1".into(),
+        }))
+        .expect("tool call")
+        .0;
+    assert_eq!(app_target.kind, "app");
+    assert_eq!(app_target.bundle_id.as_deref(), Some("com.apple.Safari"));
+    assert!(app_target.url.is_none());
+
+    let neither = FndrMcpServer::new(store_with_record("r1", None, None));
+    let no_target = neither
+        .open_target(Parameters(OpenTargetParams {
+            record_id: "r1".into(),
+        }))
+        .expect("tool call")
+        .0;
+    assert_eq!(no_target.kind, "unavailable");
+    assert!(
+        no_target.reason.is_some(),
+        "an unopenable memory must say why, not return a blank target"
+    );
+}
+
+#[test]
+fn open_target_for_an_unknown_record_is_a_typed_refusal() {
+    let server = FndrMcpServer::new(Store::open_in_memory().unwrap());
+    let result = server.open_target(Parameters(OpenTargetParams {
+        record_id: "nope".into(),
+    }));
+    assert!(result.is_err());
 }
 
 #[test]
