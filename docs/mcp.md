@@ -31,7 +31,10 @@ auditing it fails that test.
 
 Read it with `FndrMcpServer::recent_tool_calls`. That is deliberately not
 an MCP tool: the audit log is for the person who owns the machine, not for
-the agents being audited by it.
+the agents being audited by it. The FNDR desktop trust window exposes the
+same bounded, read-only owner view. It displays only time, tool, outcome,
+and the raw-release flag; it never creates a missing vault or sends audit
+content across the desktop bridge.
 
 Auth denials are logged separately, through `tracing` on the
 `fndr_mcp::audit` target, because they are rejected before any handler and

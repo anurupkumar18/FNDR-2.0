@@ -52,7 +52,8 @@ is visible to its owner, and an unaudited write is not.
 ## Explicitly not done
 
 Retention: `mcp_audit` grows without bound and no policy prunes it (T-207
-owns retention generally). No UI surface either — `recent_tool_calls` is a
-plain method, deliberately not an MCP tool, since the audit log is for the
-person who owns the machine and not for the agents it audits. T-902's
-"one-click audit log" trust moment now has something real to open.
+owns retention generally). At the time of this entry, no UI surface existed:
+`recent_tool_calls` was a plain method, deliberately not an MCP tool, since
+the audit log is for the person who owns the machine and not for the agents
+it audits. The later T-902 trust-window viewer is bounded and read-only; it
+shows only time, tool, outcome, and raw-release flag from an existing vault.

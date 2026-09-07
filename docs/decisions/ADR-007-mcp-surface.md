@@ -141,8 +141,10 @@ rather than silently carried:
    whether raw capture text was released, and deliberately nothing else:
    no query string, record id, or capture content. Auditing is structural
    rather than per-handler discipline, and a test pins the audited tool set
-   to the router's registered set. Still open: retention for that table and
-   a UI surface for T-902's "one-click audit log" moment.
+   to the router's registered set. T-902 now exposes a bounded, read-only
+   owner view in the desktop trust window; it reads only an existing vault
+   and transfers no query or capture content over IPC. Still open: retention
+   for that table and a human GUI rehearsal of the viewer.
 2. **No per-tool rate limits.** `fndr-mcp::auth::RateWindow` is one global
    window; the per-tool scoping this ADR chose option A partly to preserve
    is not built.
