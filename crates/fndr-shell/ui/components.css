@@ -1,0 +1,196 @@
+/* Component patterns (T-1406). Every panel, button, pill, and stat row in
+ * this window is one of these classes — no ad-hoc per-section styling. New
+ * sections reuse these rather than inventing a sibling; that's what keeps
+ * three cards looking like one product instead of three demos stitched
+ * together.
+ */
+
+/* Panel: the one card treatment every section uses. */
+.panel {
+  border: 1px solid var(--color-surface-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-panel);
+  padding: var(--space-6);
+}
+
+.panel + .panel {
+  margin-top: var(--space-4);
+}
+
+.panel-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+  margin-bottom: var(--space-1);
+}
+
+/* Eyebrow: the small caps kicker above every section title. */
+.eyebrow {
+  margin: 0 0 var(--space-2);
+  color: var(--color-text-tertiary);
+  font-size: var(--font-size-eyebrow);
+  font-weight: var(--font-weight-bold);
+  letter-spacing: var(--letter-spacing-eyebrow);
+  text-transform: uppercase;
+}
+
+.panel h2 {
+  margin: 0 0 var(--space-2);
+  color: var(--color-text-primary);
+  font-size: var(--font-size-title);
+  font-weight: var(--font-weight-semibold);
+}
+
+.panel p {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-body);
+  line-height: var(--line-height-normal);
+}
+
+.panel p + p {
+  margin-top: var(--space-3);
+}
+
+.panel strong {
+  color: var(--color-text-primary);
+  font-weight: var(--font-weight-semibold);
+}
+
+/* Button: one base, two roles. Primary is the single deliberate action per
+ * screen (Start capture); everything else is secondary. Nothing gets an
+ * ad-hoc inline style. */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-4);
+  margin-right: var(--space-2);
+  border: 0;
+  border-radius: var(--radius-sm);
+  padding: var(--space-3) var(--space-4);
+  font: inherit;
+  font-size: var(--font-size-body);
+  font-weight: var(--font-weight-semibold);
+  cursor: pointer;
+  transition:
+    background-color var(--motion-fast) var(--easing-standard),
+    opacity var(--motion-fast) var(--easing-standard);
+}
+
+.btn-primary {
+  background: var(--color-accent);
+  color: var(--color-text-on-accent);
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: var(--color-accent-hover);
+}
+
+.btn-secondary {
+  background: var(--color-surface-secondary);
+  color: var(--color-text-on-secondary);
+}
+
+.btn-secondary:hover:not(:disabled) {
+  background: var(--color-surface-secondary-hover);
+}
+
+.btn:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus);
+}
+
+.btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+/* Pill: the one status-badge treatment, colored by semantic role via
+ * data-state rather than a one-off class per state. */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  border-radius: var(--radius-full);
+  padding: var(--space-1) var(--space-3);
+  background: var(--color-status-neutral-bg);
+  color: var(--color-status-neutral-fg);
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-bold);
+  text-transform: capitalize;
+  white-space: nowrap;
+}
+
+.pill[data-state="running"] {
+  background: var(--color-status-running-bg);
+  color: var(--color-status-running-fg);
+}
+
+.pill[data-state="paused"] {
+  background: var(--color-status-paused-bg);
+  color: var(--color-status-paused-fg);
+}
+
+.pill[data-state="blocked"],
+.pill[data-state="failed"] {
+  background: var(--color-status-attention-bg);
+  color: var(--color-status-attention-fg);
+}
+
+.pill[data-state="stopped"],
+.pill[data-state="loading"] {
+  background: var(--color-status-neutral-bg);
+  color: var(--color-status-neutral-fg);
+}
+
+/* Stat row: the label/value grid (Last update, Latest tick, Shutdown
+ * drain) — one pattern, reused for however many stats a panel needs. */
+.stat-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: var(--space-3);
+  margin: var(--space-6) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.stat {
+  border-top: 1px solid var(--color-divider);
+  padding-top: var(--space-3);
+}
+
+.stat-label {
+  display: block;
+  color: var(--color-text-tertiary);
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-bold);
+  text-transform: uppercase;
+}
+
+.stat-value {
+  display: block;
+  margin-top: var(--space-1);
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-body);
+  line-height: var(--line-height-normal);
+}
+
+/* List: the audit-entry rows — a plain, dividing-line list, reusable for
+ * any future "recent items" surface. */
+.list {
+  display: grid;
+  gap: var(--space-2);
+  margin: var(--space-5) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.list-item {
+  border-top: 1px solid var(--color-divider);
+  padding-top: var(--space-2);
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-body);
+  line-height: var(--line-height-normal);
+}

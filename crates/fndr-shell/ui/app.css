@@ -1,12 +1,16 @@
-:root {
-  color: #172033;
-  background: #f5f7fb;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  font-synthesis: none;
-}
+/* Page layout only (T-1406). Colors, type, and component treatments live in
+ * tokens.css / components.css — this file positions the page, nothing more.
+ */
 
 * {
   box-sizing: border-box;
+}
+
+:root {
+  color: var(--color-text-primary);
+  background: var(--color-bg);
+  font-family: var(--font-family-base);
+  font-synthesis: none;
 }
 
 body {
@@ -16,171 +20,38 @@ body {
 
 main {
   display: grid;
-  gap: 18px;
+  gap: var(--space-4);
   max-width: 760px;
   margin: 0 auto;
-  padding: 48px 32px;
+  padding: var(--space-12) var(--space-8);
 }
 
-h1,
-h2,
-p {
-  margin-top: 0;
+header {
+  margin-bottom: var(--space-2);
 }
 
-h1 {
-  margin-bottom: 8px;
-  color: #12295c;
-  font-size: clamp(2.5rem, 9vw, 4.75rem);
-  letter-spacing: -0.08em;
-  line-height: 0.9;
+header h1 {
+  margin: 0 0 var(--space-2);
+  color: var(--color-accent);
+  font-size: var(--font-size-display);
+  font-weight: var(--font-weight-bold);
+  letter-spacing: var(--letter-spacing-display);
+  line-height: var(--line-height-tight);
 }
 
-h2 {
-  margin-bottom: 6px;
-  font-size: 1.25rem;
-}
-
-.eyebrow {
-  margin-bottom: 8px;
-  color: #5d6a84;
-  font-size: 0.72rem;
-  font-weight: 700;
-  letter-spacing: 0.14em;
-}
-
-.lede,
-.detail,
-.truth-card p,
-dd {
-  color: #4d5a73;
-  line-height: 1.5;
-}
-
-.status-card,
-.audit-card,
-.truth-card {
-  border: 1px solid #dce2ef;
-  border-radius: 18px;
-  background: #fff;
-  box-shadow: 0 12px 32px rgb(25 45 88 / 0.08);
-  padding: 24px;
-}
-
-.audit-entries {
-  display: grid;
-  gap: 8px;
-  margin: 18px 0 0;
-  padding: 0;
-  list-style: none;
-}
-
-.audit-entries li {
-  border-top: 1px solid #e7ebf3;
-  padding-top: 8px;
-  color: #4d5a73;
-  font-size: 0.9rem;
-  line-height: 1.4;
-}
-
-.status-heading {
-  display: flex;
-  align-items: start;
-  justify-content: space-between;
-  gap: 16px;
-}
-
-.badge {
-  border-radius: 999px;
-  padding: 7px 11px;
-  background: #e8edf7;
-  color: #33415e;
-  font-size: 0.82rem;
-  font-weight: 700;
-  text-transform: capitalize;
-}
-
-.badge[data-state="running"] {
-  background: #dff5e8;
-  color: #146b3a;
-}
-
-.badge[data-state="paused"] {
-  background: #fff0df;
-  color: #8a4b0c;
-}
-
-.badge[data-state="blocked"],
-.badge[data-state="failed"] {
-  background: #fff0df;
-  color: #8a4b0c;
-}
-
-.badge[data-state="stopped"] {
-  background: #e8edf7;
-  color: #46536e;
-}
-
-button {
-  margin-top: 4px;
-  border: 0;
-  border-radius: 10px;
-  padding: 10px 14px;
-  background: #12295c;
-  color: #fff;
-  cursor: pointer;
-  font: inherit;
-  font-weight: 700;
-}
-
-button:hover:not(:disabled) {
-  background: #1f438e;
-}
-
-button:focus-visible {
-  outline: 3px solid #7aabff;
-  outline-offset: 2px;
-}
-
-button:disabled {
-  cursor: not-allowed;
-  opacity: 0.55;
-}
-
-dl {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
-  margin: 24px 0 0;
-}
-
-dl div {
-  border-top: 1px solid #e7ebf3;
-  padding-top: 12px;
-}
-
-dt {
-  color: #6c7790;
-  font-size: 0.76rem;
-  font-weight: 700;
-  text-transform: uppercase;
-}
-
-dd {
-  margin: 5px 0 0;
-  font-size: 0.9rem;
-}
-
-strong {
-  color: #172033;
+header .lede {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-body);
+  line-height: var(--line-height-normal);
 }
 
 @media (max-width: 580px) {
   main {
-    padding: 30px 18px;
+    padding: var(--space-8) var(--space-4);
   }
 
-  dl {
+  .stat-row {
     grid-template-columns: 1fr;
   }
 }

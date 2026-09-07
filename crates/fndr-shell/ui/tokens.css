@@ -1,0 +1,113 @@
+/* Design tokens (T-1406). Every color, size, and timing value this window
+ * uses lives here as a semantic role, never a raw literal in app.css or
+ * components.css — that's what scripts/ui-lints.sh's token-coverage check
+ * enforces. Light values on :root; dark values only override what differs,
+ * under prefers-color-scheme, so a missing token role is a visible bug
+ * (falls back to light) rather than a silently wrong color.
+ */
+
+:root {
+  /* Type: the system font stack is itself the "Apple design" cue — this
+   * app should look like it was built with, not against, macOS. */
+  --font-family-base: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+  --font-family-mono: ui-monospace, "SF Mono", Menlo, monospace;
+
+  --font-size-display: clamp(2.5rem, 9vw, 4.75rem); /* the FNDR wordmark */
+  --font-size-title: 1.25rem; /* section h2 */
+  --font-size-body: 0.95rem;
+  --font-size-caption: 0.82rem; /* dt labels, tick/drain rows */
+  --font-size-eyebrow: 0.72rem; /* section kickers */
+
+  --font-weight-regular: 400;
+  --font-weight-semibold: 600;
+  --font-weight-bold: 700;
+
+  --line-height-tight: 0.9; /* the wordmark */
+  --line-height-normal: 1.5;
+
+  --letter-spacing-display: -0.03em;
+  --letter-spacing-eyebrow: 0.11em;
+
+  /* Space: a 4px grid, matching macOS's own layout rhythm. */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+
+  --radius-sm: 10px; /* buttons */
+  --radius-md: 16px; /* panels */
+  --radius-full: 999px; /* pills */
+
+  --shadow-panel: 0 1px 2px rgb(15 23 42 / 0.04), 0 12px 32px rgb(15 23 42 / 0.06);
+  --shadow-focus: 0 0 0 3px var(--color-focus-ring);
+
+  --motion-fast: 120ms;
+  --motion-base: 200ms;
+  --easing-standard: cubic-bezier(0.2, 0.8, 0.2, 1);
+
+  /* Color roles: light (default). */
+  --color-bg: #f5f6f8;
+  --color-surface: #ffffff;
+  --color-surface-border: #e2e5eb;
+  --color-divider: #ebedf1;
+
+  --color-text-primary: #1a1d24;
+  --color-text-secondary: #565c6b;
+  --color-text-tertiary: #7a8194;
+  --color-text-on-accent: #ffffff;
+
+  --color-accent: #1d3a70;
+  --color-accent-hover: #294c8d;
+  --color-focus-ring: rgb(29 58 112 / 0.35);
+
+  --color-surface-secondary: #eef0f4;
+  --color-surface-secondary-hover: #e4e7ee;
+  --color-text-on-secondary: #2b2f3a;
+
+  --color-status-running-bg: #e2f5e9;
+  --color-status-running-fg: #1a6b3d;
+  --color-status-paused-bg: #fdf1e0;
+  --color-status-paused-fg: #8a5a10;
+  --color-status-attention-bg: #fdf1e0;
+  --color-status-attention-fg: #8a5a10;
+  --color-status-neutral-bg: #eef0f4;
+  --color-status-neutral-fg: #4b515e;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-bg: #16181d;
+    --color-surface: #1e2129;
+    --color-surface-border: #2c303a;
+    --color-divider: #2a2e37;
+
+    --color-text-primary: #f1f2f4;
+    --color-text-secondary: #a7acb9;
+    --color-text-tertiary: #7d8394;
+
+    --color-accent: #6f9bff;
+    --color-accent-hover: #8bacff;
+    --color-focus-ring: rgb(111 155 255 / 0.4);
+    --color-text-on-accent: #0d1117;
+
+    --color-surface-secondary: #262a33;
+    --color-surface-secondary-hover: #2f3440;
+    --color-text-on-secondary: #e7e9ed;
+
+    --color-status-running-bg: #123322;
+    --color-status-running-fg: #6fe3a0;
+    --color-status-paused-bg: #3a2c11;
+    --color-status-paused-fg: #f0b45f;
+    --color-status-attention-bg: #3a2c11;
+    --color-status-attention-fg: #f0b45f;
+    --color-status-neutral-bg: #262a33;
+    --color-status-neutral-fg: #b7bcc8;
+
+    --shadow-panel: 0 1px 2px rgb(0 0 0 / 0.3), 0 12px 32px rgb(0 0 0 / 0.35);
+  }
+}

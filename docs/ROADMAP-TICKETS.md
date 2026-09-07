@@ -335,6 +335,8 @@ comment linking the PR).
   Every surface including the 3D graph on tokens. AC: token-coverage lint clean.
 - **T-1404 · Design language spec** `lane::frontend` `prio::p0` `M1` deps: none
   Type scale, spacing, color roles, elevation, motion, and component inventory, written before feature UI exists; includes the explicit anti-slop bar (no gradient soup, no boxes-in-containers, no ad-hoc buttons, consistent fonts). AC: reviewed by all four; every later UI ticket links to it.
+- **T-1406 · Alpha trust window design pass** `lane::frontend` `prio::p1` `M3` deps: none
+  Design tokens (color roles, type scale, spacing, radii, elevation, motion) and a small set of component patterns (button, panel, status pill, section label) for `crates/fndr-shell/ui/` — the vanilla HTML/CSS/JS trust window that is Tauri's actual configured `frontendDist` and the only surface a person sees running the app today. Distinct from T-1401/T-1404/T-1405, which target the separate, still-unbuilt root `ui/` React app (deps: T-1001); this ticket does not close those. AC: no raw hex/rgb color literal outside the tokens file (lint, wired into `make test`); every button/panel/status element uses a defined component class, not inline/ad-hoc styles; every existing real data binding (capture status, audit log, tick reason, preflight state) preserved with zero new hardcoded or placeholder content.
 
 ## E15 · Proof, companion contract, ship (M5 to M6)
 
