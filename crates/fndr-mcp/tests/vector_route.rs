@@ -8,8 +8,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use fndr_inference::{EmbedError, Embedder, EmbeddingSpec};
+use fndr_capture::{FrameSource, PngFileSource};
+use fndr_inference::{CHUNK_EMBEDDING_V1, EmbedError, Embedder, EmbeddingSpec, GgufEmbedder};
 use fndr_mcp::{FndrMcpServer, SearchParams};
+use fndr_ocr::OcrEngine;
 use fndr_privacy::Blocklist;
 use fndr_store::{LanceWriter, NewChunk, NewRecord, Store};
 use rmcp::handler::server::wrapper::Parameters;
@@ -362,4 +364,98 @@ async fn a_long_vector_hit_snippet_is_truncated_to_200_chars() {
         "snippet should be capped at 200 characters plus the ellipsis, got {snippet:?}"
     );
     assert!(long_text.trim().len() > snippet.len());
+}
+
+/// Real end-to-end proof with the actual pinned model (not `TestEmbedder`):
+/// a real captured frame, real Apple Vision OCR, a real `GgufEmbedder`
+/// loading the 639 MB Qwen3 GGUF, a real `LanceWriter` flush, and a real
+/// `VectorRetriever` query, all reached through `FndrMcpServer::search`
+/// exactly as the MCP tool serves it. Ignored by default (needs the real
+/// model file on disk and takes real inference time); run explicitly:
+/// `cargo test -p fndr-mcp --test vector_route -- --ignored --nocapture`
+#[tokio::test(flavor = "multi_thread")]
+#[ignore]
+async fn real_model_finds_a_genuine_paraphrase_keyword_search_would_miss() {
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../fndr-ocr/tests/fixtures/skeleton_fixture.png");
+    let frame = PngFileSource { path: fixture }
+        .grab()
+        .expect("fixture frame");
+    let ocr = OcrEngine::new().expect("Vision available");
+    let recognized = ocr.recognize(&frame.png).expect("ocr");
+    // Fixture text is "FNDR walking skeleton fixture" plus the pangram "the
+    // quick brown fox jumps over the lazy dog" (confirmed by direct OCR
+    // run). The query below shares zero literal words with either line.
+    assert!(recognized.to_lowercase().contains("fox"));
+
+    let dir = scratch("real-model");
+    let mut store = Store::open(&dir.join("vault.sqlite3")).unwrap();
+    store
+        .insert_capture(
+            &NewRecord {
+                id: "r-real".into(),
+                session_id: "s1".into(),
+                source: "screen".into(),
+                app_name: "Notes".into(),
+                bundle_id: None,
+                url: None,
+                window_title: "fixture".into(),
+                captured_at_ms: 42,
+                created_at_ms: 42,
+            },
+            &[NewChunk {
+                id: "c-real".into(),
+                ord: 0,
+                text: recognized,
+            }],
+        )
+        .unwrap();
+
+    let model_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../models/Qwen3-Embedding-0.6B-Q8_0.gguf");
+    let embedder: Arc<dyn Embedder> =
+        Arc::new(GgufEmbedder::load(&model_path, CHUNK_EMBEDDING_V1).expect(
+            "model load failed; expected models/Qwen3-Embedding-0.6B-Q8_0.gguf at repo root",
+        ));
+    let index_dir = dir.join("index");
+    LanceWriter::new(&index_dir)
+        .flush_once(&mut store, embedder.as_ref(), 43)
+        .await
+        .unwrap();
+
+    // A paraphrase of "the quick brown fox jumps over the lazy dog" with no
+    // literal word overlap at all: proves the vector route, not an
+    // accidental keyword hit.
+    let paraphrase = "a nimble animal leaping past a drowsy canine";
+
+    let server = FndrMcpServer::with_vector_route(store, Blocklist::default(), embedder, index_dir);
+    let out = server
+        .search(Parameters(SearchParams {
+            query: paraphrase.into(),
+            limit: None,
+        }))
+        .expect("tool call")
+        .0;
+    assert_eq!(
+        out.hits.len(),
+        1,
+        "expected the real model to find the fixture chunk"
+    );
+    assert_eq!(out.hits[0].chunk_id, "c-real");
+    assert_eq!(out.hits[0].route, "vector");
+    assert!(out.vector_route_available);
+
+    // Regression check: the identical paraphrase against a keyword-only
+    // server (same captured data, no vector route) finds nothing, proving
+    // the vector-route hit above was not an accidental keyword match.
+    let keyword_only_store = Store::open(&dir.join("vault.sqlite3")).unwrap();
+    let keyword_hits = fndr_retrieval::KeywordRetriever::new(&keyword_only_store)
+        .search(paraphrase, 10)
+        .unwrap();
+    assert!(
+        keyword_hits.is_empty(),
+        "the paraphrase must share no keyword-searchable terms with the fixture text"
+    );
+
+    std::fs::remove_dir_all(dir).unwrap();
 }
