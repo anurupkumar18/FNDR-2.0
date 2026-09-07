@@ -1,7 +1,8 @@
-//! The MCP surface (ADR-007). Seven of the 14 founding tools are wired:
+//! The MCP surface (ADR-007). Eight of the 14 founding tools are wired:
 //! `fndr.search` (over `fndr-retrieval::KeywordRetriever`, not ADR-007's full
 //! hybrid/filtered contract yet), `fndr.privacy_status`, `fndr.timeline`
-//! (activity counts only, never capture text), `fndr.source_evidence`
+//! and `fndr.delta` (both counts only, never capture text),
+//! `fndr.source_evidence`
 //! (capture text behind an explicit `include_raw` gate that defaults
 //! closed), `fndr.open_target` (sanitized URL or app, else an explicit
 //! unavailable state), `fndr.recall` (decisions only; unbacked kinds are refused, not
@@ -150,6 +151,34 @@ pub struct SourceEvidenceOutput {
     /// Echoes whether raw text was included, so a caller never has to infer
     /// the gate's state from an absent field.
     pub raw_included: bool,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema, Default)]
+pub struct DeltaParams {
+    /// Return what was captured at or after this instant, unix ms. Pass the
+    /// previous response's `newest_captured_at_ms` to continue polling.
+    pub since_ms: i64,
+    /// Maximum apps listed (default 10, capped at 100). The totals always
+    /// count every app, listed or not.
+    pub app_limit: Option<u32>,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct AppChangeOut {
+    pub app_name: String,
+    pub record_count: i64,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct DeltaOutput {
+    pub since_ms: f64,
+    /// Every record captured in the window, regardless of how many apps the
+    /// `apps` list was capped to.
+    pub record_count: i64,
+    /// Newest capture instant in the window, or absent when nothing was
+    /// captured. Feed it back as the next call's `since_ms`.
+    pub newest_captured_at_ms: Option<f64>,
+    pub apps: Vec<AppChangeOut>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema, Default)]
@@ -398,6 +427,40 @@ impl FndrMcpServer {
                 })
                 .collect(),
             raw_included: include_raw,
+        }))
+    }
+
+    #[tool(
+        name = "fndr.delta",
+        description = "What was captured since an instant: totals and the busiest apps, never capture text. Built for cheap repeated polling; feed newest_captured_at_ms back as the next since_ms."
+    )]
+    pub fn delta(
+        &self,
+        Parameters(DeltaParams {
+            since_ms,
+            app_limit,
+        }): Parameters<DeltaParams>,
+    ) -> Result<Json<DeltaOutput>, ErrorData> {
+        let app_limit = app_limit.unwrap_or(10).min(100) as usize;
+        let store = self
+            .store
+            .lock()
+            .map_err(|_| ErrorData::internal_error("store lock poisoned", None))?;
+        let summary = store
+            .changes_since(since_ms, app_limit)
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        Ok(Json(DeltaOutput {
+            since_ms: since_ms as f64,
+            record_count: summary.record_count,
+            newest_captured_at_ms: summary.newest_captured_at_ms.map(|ms| ms as f64),
+            apps: summary
+                .apps
+                .into_iter()
+                .map(|app| AppChangeOut {
+                    app_name: app.app_name,
+                    record_count: app.record_count,
+                })
+                .collect(),
         }))
     }
 

@@ -20,7 +20,7 @@ pub use lance_writer::{
 };
 pub use skeleton::{SearchHit, SkeletonStore};
 pub use store::{
-    ActivityBucket, CaptureMetadata, ChunkEvidence, ChunkSearchHit, DeleteScope, LedgerDecision,
-    NewChunk, NewRecord, PendingChunk, PendingContinuityCandidate, RecordEvidence, Store,
-    StoreError, TimelineGranularity,
+    ActivityBucket, AppChange, CaptureMetadata, ChangeSummary, ChunkEvidence, ChunkSearchHit,
+    DeleteScope, LedgerDecision, NewChunk, NewRecord, PendingChunk, PendingContinuityCandidate,
+    RecordEvidence, Store, StoreError, TimelineGranularity,
 };

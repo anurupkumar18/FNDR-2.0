@@ -144,6 +144,22 @@ pub struct ActivityBucket {
     pub record_count: i64,
 }
 
+/// How much one app contributed to a window of new captures.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AppChange {
+    pub app_name: String,
+    pub record_count: i64,
+}
+
+/// What changed since an instant: totals and per-app counts, never content.
+/// Built for cheap repeated polling.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ChangeSummary {
+    pub record_count: i64,
+    pub newest_captured_at_ms: Option<i64>,
+    pub apps: Vec<AppChange>,
+}
+
 /// One entry read back from the append-only decision ledger.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LedgerDecision {
@@ -577,6 +593,48 @@ impl Store {
         }))
     }
 
+    /// Summarize captures at or after `since_ms`: how many, the newest
+    /// instant, and the busiest apps. Counts only, so a caller can poll this
+    /// repeatedly without moving any capture content.
+    pub fn changes_since(
+        &self,
+        since_ms: i64,
+        app_limit: usize,
+    ) -> Result<ChangeSummary, StoreError> {
+        let mut statement = self.conn.prepare(
+            "SELECT app_name, COUNT(*) AS records, MAX(captured_at_ms) AS newest
+             FROM memory_records
+             WHERE captured_at_ms >= ?1
+             GROUP BY app_name
+             ORDER BY records DESC, app_name",
+        )?;
+        let rows = statement
+            .query_map([since_ms], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let record_count = rows.iter().map(|(_, count, _)| count).sum();
+        let newest_captured_at_ms = rows.iter().map(|(_, _, newest)| *newest).max();
+        let apps = rows
+            .into_iter()
+            .take(app_limit)
+            .map(|(app_name, record_count, _)| AppChange {
+                app_name,
+                record_count,
+            })
+            .collect();
+        Ok(ChangeSummary {
+            record_count,
+            newest_captured_at_ms,
+            apps,
+        })
+    }
+
     /// Read the decision ledger, newest first. `since_ms` bounds the read to
     /// decisions made at or after that instant.
     pub fn recent_decisions(
@@ -1003,6 +1061,33 @@ mod tests {
     fn record_evidence_for_an_unknown_record_is_none_not_an_error() {
         let store = Store::open_in_memory().unwrap();
         assert!(store.record_evidence("missing").unwrap().is_none());
+    }
+
+    #[test]
+    fn changes_since_totals_every_app_even_when_the_app_list_is_capped() {
+        let store = Store::open_in_memory().unwrap();
+        insert_record_at(&store, "old", "Safari", 500);
+        insert_record_at(&store, "a", "Safari", 1_000);
+        insert_record_at(&store, "b", "Safari", 1_500);
+        insert_record_at(&store, "c", "Terminal", 2_000);
+        insert_record_at(&store, "d", "Notes", 2_500);
+
+        let summary = store.changes_since(1_000, 1).unwrap();
+        assert_eq!(summary.record_count, 4, "the pre-window record is excluded");
+        assert_eq!(summary.newest_captured_at_ms, Some(2_500));
+        assert_eq!(summary.apps.len(), 1, "app list respects its cap");
+        assert_eq!(summary.apps[0].app_name, "Safari", "busiest app first");
+        assert_eq!(summary.apps[0].record_count, 2);
+    }
+
+    #[test]
+    fn changes_since_a_future_instant_is_an_empty_summary() {
+        let store = Store::open_in_memory().unwrap();
+        insert_record_at(&store, "a", "Safari", 1_000);
+        let summary = store.changes_since(9_000, 10).unwrap();
+        assert_eq!(summary.record_count, 0);
+        assert_eq!(summary.newest_captured_at_ms, None);
+        assert!(summary.apps.is_empty());
     }
 
     #[test]

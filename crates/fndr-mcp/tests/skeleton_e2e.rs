@@ -4,7 +4,7 @@
 
 use fndr_capture::{FrameSource, PngFileSource};
 use fndr_mcp::{
-    FndrMcpServer, OpenTargetParams, PrivacyStatusParams, RecallKind, RecallParams,
+    DeltaParams, FndrMcpServer, OpenTargetParams, PrivacyStatusParams, RecallKind, RecallParams,
     RememberDecisionParams, SearchParams, SourceEvidenceParams, TimelineGrain, TimelineParams,
 };
 use fndr_ocr::OcrEngine;
@@ -228,6 +228,43 @@ fn remember_decision_appends_and_rejects_an_empty_statement() {
         decided_at_ms: None,
     }));
     assert!(rejected.is_err(), "an empty statement must not be recorded");
+}
+
+#[test]
+fn delta_reports_counts_and_its_cursor_makes_the_next_poll_empty() {
+    let secret = "a private sentence that must not appear in a delta";
+    let server = FndrMcpServer::new(store_with_one_record(secret));
+
+    let first = server
+        .delta(Parameters(DeltaParams {
+            since_ms: 0,
+            app_limit: None,
+        }))
+        .expect("tool call")
+        .0;
+    assert_eq!(first.record_count, 1);
+    assert_eq!(first.apps.len(), 1);
+    assert_eq!(first.apps[0].app_name, "Safari");
+    let cursor = first.newest_captured_at_ms.expect("a capture happened");
+
+    let rendered = serde_json::to_string(&first).expect("serializes");
+    assert!(
+        !rendered.contains("private sentence"),
+        "a delta must carry counts, never capture text"
+    );
+
+    // Polling forward from the newest instant returns only that same record,
+    // and one millisecond later returns nothing: the cursor is usable.
+    let quiet = server
+        .delta(Parameters(DeltaParams {
+            since_ms: cursor as i64 + 1,
+            app_limit: None,
+        }))
+        .expect("tool call")
+        .0;
+    assert_eq!(quiet.record_count, 0);
+    assert!(quiet.newest_captured_at_ms.is_none());
+    assert!(quiet.apps.is_empty());
 }
 
 fn store_with_record(id: &str, bundle_id: Option<&str>, url: Option<&str>) -> Store {

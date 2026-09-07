@@ -5,7 +5,7 @@ The canonical tool set and its rationale live in
 P1 additions). This document is the per-tool contract for tools that are
 actually implemented; it grows one entry per tool as each lands, per
 ADR-007's tool-addition rule (use case, schema round-trip test,
-auth-failure test, rate limit, docs entry). Seven of the fourteen are
+auth-failure test, rate limit, docs entry). Eight of the fourteen are
 implemented today.
 
 Transport, auth, and posture (bearer token, Origin/Host allowlist, rate
@@ -61,6 +61,21 @@ a complete one. `to_ms` before `from_ms`, or an offset outside
 ADR-007's flexible `time_window` shorthand (`"today"`, `"7d"`, from/to
 object) is **not** implemented; this tool takes explicit unix-ms bounds.
 The shared parser lands when a second tool needs it.
+
+### `fndr.delta`
+
+What was captured since an instant: totals and the busiest apps. Built for
+cheap repeated polling, so it carries counts only, never capture text.
+
+**Params:** `{ since_ms: number, app_limit?: number }`. `app_limit`
+defaults to 10, capped at 100.
+
+**Result:** `{ since_ms, record_count, newest_captured_at_ms?, apps: [{ app_name, record_count }] }`.
+
+`record_count` counts every record in the window regardless of how many
+apps `app_limit` listed, so a capped app list never understates the total.
+`newest_captured_at_ms` is absent when nothing was captured; otherwise feed
+it back as the next call's `since_ms` to continue polling.
 
 ### `fndr.source_evidence`
 
@@ -127,7 +142,7 @@ touches ranking.
 
 ## Not yet implemented
 
-`fndr.context_pack`, `fndr.delta`, `fndr.active_focus`,
+`fndr.context_pack`, `fndr.active_focus`,
 `fndr.project_context`, `fndr.graph_context`,
 `fndr.explain_retrieval`, `fndr.feedback`, and the
 ratified P1 additions `fndr.answer` and `fndr.session_story`. See ADR-007
