@@ -52,5 +52,7 @@ has stopped.
   unattended workflow.
 - No live egress counter, audit retention policy, browser-native incognito
   coordination, autostart, or graphical single-instance handoff is complete.
-- Vector retrieval is an opt-in local benchmark route only; the MCP and UI
-  retrieval story remains keyword FTS, with no hybrid, RRF, or reranking.
+- `fndr.search` now serves a real vector route, but only when the MCP server
+  is launched with `--model`/`--index-dir`; results are merged with keyword
+  hits, not fused or ranked together, so there is still no hybrid, RRF, or
+  reranking. The UI still has no search surface at all.

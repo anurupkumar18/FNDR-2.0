@@ -19,7 +19,7 @@ For a concise narrative that preserves those boundaries, use the
 | Private-browsing cue | A foreground title carrying the existing private/incognito cue becomes the content-free `private_browsing` skip reason before pixels are captured. | This is not a complete, browser-native private-window detector. |
 | Owner audit viewer | The trust window can open the bounded local MCP audit ledger, showing only time, tool, outcome, and raw-text-release flag. A missing vault returns an honest empty view and is not created. | The ledger has no retention policy yet; a human still needs to review it in the rendered app. |
 | Single-instance and clean exit code | Tauri single-instance callback compiles; the lifecycle owns a final drain on exit. | A live graphical handoff and hardware clean-exit observation remain human checks. |
-| Retrieval | FTS CI baseline remains `1.0000` Recall@5/MRR@10 on the sample corpus. The opt-in real-Qwen vector smoke route measured `1.0000`/`1.0000`, p50/p95 `90.43/90.62 ms` on the local M1. | The vector route is not yet MCP/UI/fusion behavior and is not a tuned quality claim. |
+| Retrieval | FTS CI baseline remains `1.0000` Recall@5/MRR@10 on the sample corpus. The opt-in real-Qwen vector smoke route measured `1.0000`/`1.0000`, p50/p95 `90.43/90.62 ms` on the local M1. `fndr.search` now merges that vector route when the MCP server is launched with `--model`/`--index-dir`: `crates/fndr-mcp/tests/vector_route.rs`'s `real_model_finds_a_genuine_paraphrase_keyword_search_would_miss` (`cargo test -p fndr-mcp --test vector_route -- --ignored`) proves it finds a genuine paraphrase against the real pinned Qwen3-Embedding-0.6B GGUF model. | This is not hybrid search, RRF fusion, or reranking — keyword and vector hits are merged and deduped by chunk_id with no combined score. Without `--model`/`--index-dir` at launch, `fndr.search` stays keyword-only. `fndr.context_pack` still only uses the keyword route, and the desktop UI still has no search surface. |
 
 `CARGO_BUILD_JOBS=1 make test` and `make bench` pass after these checks.
 
@@ -46,4 +46,4 @@ For a concise narrative that preserves those boundaries, use the
 - Live permission denial/revocation probing, egress counter, browser-native incognito
   coordination, or autostart.
 - A real GUI single-instance handoff or an unattended hardware soak.
-- Hybrid, RRF, reranked, temporal, or MCP-served vector retrieval.
+- Hybrid, RRF, reranked, or temporal retrieval.

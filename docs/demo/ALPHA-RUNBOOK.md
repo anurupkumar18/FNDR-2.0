@@ -161,6 +161,20 @@ cargo run -p fndr-shell --bin fndr-shell -- --data-dir "$alpha_tmp/desktop" \
 cargo run -p fndr-mcp -- --store "$alpha_tmp/desktop/vault.sqlite3"
 ```
 
+Optionally, add `--model`/`--index-dir` to this same command to also enable
+the vector route for `fndr.search` (still merged with keyword hits, not
+fused or ranked together):
+
+```sh
+cargo run -p fndr-mcp -- --store "$alpha_tmp/desktop/vault.sqlite3" \
+  --model models/Qwen3-Embedding-0.6B-Q8_0.gguf --index-dir "$alpha_tmp/desktop/index"
+```
+
+With `--model`/`--index-dir` given, the server prints `Vector route enabled:
+...` instead of `Vector route disabled (no --model given); fndr.search is
+keyword-only.`. This flag pair is optional; the plain command above remains
+the default documented form.
+
 Use the second command's printed bearer-token snippet to connect the MCP
 client. For a bounded capture lifecycle rehearsal, add `--run-seconds 60` to
 the first command: this explicitly CLI-authorizes capture to start and then
