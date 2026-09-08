@@ -170,7 +170,20 @@ impl RecognizedText {
     /// its internal 80-char admit threshold and discarded almost every real
     /// short capture, which is what this shape exists to prevent.
     pub fn is_low_signal(&self, min_chars: usize) -> bool {
-        let char_count = self.text.trim().len();
+        // Confidence annotations are control metadata, not captured evidence,
+        // and UTF-8 byte length overstates the amount of readable text. Keep
+        // the configured floor honest by counting marker-free characters.
+        let marker_free_text = self
+            .text
+            .lines()
+            .map(|line| {
+                line.strip_prefix("[LOW_CONF] ")
+                    .or_else(|| (line == "[LOW_CONF]").then_some(""))
+                    .unwrap_or(line)
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let char_count = marker_free_text.trim().chars().count();
         if char_count < min_chars {
             return true;
         }
@@ -891,6 +904,29 @@ mod tests {
         // `min_ocr_chars` knob a lie (PRD P0.11, no silent degradation).
         assert!(recognized(11, 0.50, 3).is_low_signal(12));
         assert!(!recognized(13, 0.50, 3).is_low_signal(12));
+    }
+
+    #[test]
+    fn min_ocr_chars_ignores_confidence_markers() {
+        let mut rt = recognized(0, 0.50, 2);
+        rt.text = "[LOW_CONF] tiny".to_owned();
+        assert!(rt.is_low_signal(12));
+    }
+
+    #[test]
+    fn min_ocr_chars_preserves_literal_confidence_tokens() {
+        let mut rt = recognized(0, 0.50, 2);
+        rt.text = "let marker = \"[LOW_CONF]\";".to_owned();
+        assert!(!rt.is_low_signal(12));
+    }
+
+    #[test]
+    fn min_ocr_chars_counts_unicode_characters_not_utf8_bytes() {
+        let mut rt = recognized(0, 0.50, 3);
+        rt.text = "é".repeat(11);
+        assert!(rt.is_low_signal(12));
+        rt.text.push('é');
+        assert!(!rt.is_low_signal(12));
     }
 
     #[test]

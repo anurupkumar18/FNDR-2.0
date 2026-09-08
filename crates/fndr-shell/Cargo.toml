@@ -12,6 +12,7 @@ fndr-memory = { path = "../fndr-memory" }
 fndr-ocr = { path = "../fndr-ocr" }
 fndr-privacy = { path = "../fndr-privacy" }
 fndr-store = { path = "../fndr-store" }
+fndr-textsignal = { path = "../fndr-textsignal" }
 fndr-types = { path = "../fndr-types" }
 core-graphics = "=0.25.0"
 serde = { version = "1", features = ["derive"] }

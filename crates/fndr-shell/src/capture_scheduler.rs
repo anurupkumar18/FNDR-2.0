@@ -322,7 +322,13 @@ mod tests {
     struct Ocr;
 
     impl OcrRecognizer for Ocr {
-        fn recognize(&self, _png: &[u8], _min_chars: usize) -> Result<OcrOutput, PipelineError> {
+        fn recognize(
+            &self,
+            _png: &[u8],
+            _app_name: &str,
+            _bundle_id: Option<&str>,
+            _min_chars: usize,
+        ) -> Result<OcrOutput, PipelineError> {
             Ok(OcrOutput {
                 text: "scheduler writes durable truth".to_owned(),
                 confidence: 0.9,
