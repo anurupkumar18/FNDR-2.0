@@ -568,27 +568,25 @@ impl FndrMcpServer {
 
         let vector_route_available = self.vector_route.is_some();
         if let Some((embedder, index_dir)) = &self.vector_route {
-            // `vector_hits_with_snippets` only touches `store` for the
-            // snippet-building span after the embed+Lance round trip
-            // completes, but its signature takes `&Store` for the whole
-            // call, so the guard below is held for that entire call rather
-            // than only the snippet-building portion. Re-acquired here
-            // (never held across the keyword phase above), and dropped as
-            // soon as this call returns.
+            // No store lock held here: this is the embed+Lance round trip,
+            // which does not touch `store` at all.
+            let raw_hits = block_on_from_sync(fndr_retrieval::vector_hits(
+                embedder.as_ref(),
+                index_dir,
+                &query,
+                limit,
+                &mut seen,
+            ))
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+            // Store lock re-acquired only for the synchronous
+            // snippet-building step, mirroring the keyword phase above.
             let new_hits = {
                 let store = self
                     .store
                     .lock()
                     .map_err(|_| ErrorData::internal_error("store lock poisoned", None))?;
-                block_on_from_sync(fndr_retrieval::vector_hits_with_snippets(
-                    &store,
-                    embedder.as_ref(),
-                    index_dir,
-                    &query,
-                    limit,
-                    &mut seen,
-                ))
-                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?
+                fndr_retrieval::tag_vector_hits_with_snippets(&store, raw_hits)
             };
             hits.extend(new_hits.into_iter().map(tagged_hit_to_search_hit));
         }

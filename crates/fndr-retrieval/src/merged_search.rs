@@ -10,7 +10,7 @@ use std::path::Path;
 use fndr_inference::Embedder;
 use fndr_store::Store;
 
-use crate::{KeywordRetriever, VectorRetriever, VectorSearchError};
+use crate::{KeywordRetriever, VectorHit, VectorRetriever, VectorSearchError};
 
 /// One search result, tagged with which route found it. No combined score
 /// exists across routes (ADR-006: raw score fusion needs a benchmark to
@@ -27,7 +27,7 @@ pub struct TaggedHit {
 
 /// Keyword-route hits, tagged `route: "keyword"`. Every returned chunk_id
 /// is also inserted into `seen`, so a caller can pass the same set into
-/// `vector_hits_with_snippets` afterward to dedup against these.
+/// `vector_hits` afterward to dedup against these.
 pub fn keyword_hits(
     store: &Store,
     query: &str,
@@ -52,24 +52,17 @@ pub fn keyword_hits(
 }
 
 /// Vector-route hits not already in `seen` (which is mutated to include
-/// them), tagged `route: "vector"`, with snippets built from `store`
-/// (Lance rows carry no FTS match markers, so this reads the durable text
-/// back out instead of returning an empty or fabricated snippet).
-/// `store` is only locked/read for the snippet-building span by design --
-/// this function itself does not hold any lock across the embed+Lance
-/// round trip in `VectorRetriever::search`; callers with a shared,
-/// concurrently-accessed `Store` (behind their own Mutex) should call this
-/// with the lock already released from the keyword phase and only
-/// acquire it again around whatever wraps this call, mirroring how
-/// `fndr-mcp` already does this.
-pub async fn vector_hits_with_snippets(
-    store: &Store,
+/// them). Takes no `Store`: this is the embed+Lance round trip only, so a
+/// caller holding `store` behind a shared `Mutex` can run this with the
+/// lock fully released and only acquire it afterward, for the snippet
+/// step in `tag_vector_hits_with_snippets`.
+pub async fn vector_hits(
     embedder: &dyn Embedder,
     index_dir: &Path,
     query: &str,
     limit: usize,
     seen: &mut HashSet<String>,
-) -> Result<Vec<TaggedHit>, VectorSearchError> {
+) -> Result<Vec<VectorHit>, VectorSearchError> {
     let vector_hits = VectorRetriever::new(index_dir)
         .search(query, limit, embedder)
         .await?;
@@ -77,6 +70,17 @@ pub async fn vector_hits_with_snippets(
     Ok(vector_hits
         .into_iter()
         .filter(|hit| seen.insert(hit.chunk_id.clone()))
+        .collect())
+}
+
+/// Tags already-fetched vector hits `route: "vector"` and builds each
+/// snippet from `store` (Lance rows carry no FTS match markers, so this
+/// reads the durable text back out instead of returning an empty or
+/// fabricated snippet). Synchronous and store-only, so a caller can hold
+/// its store lock for exactly this span, not the `vector_hits` round trip
+/// that produced the input.
+pub fn tag_vector_hits_with_snippets(store: &Store, hits: Vec<VectorHit>) -> Vec<TaggedHit> {
+    hits.into_iter()
         .map(|hit| {
             let snippet = vector_hit_snippet(store, &hit).unwrap_or_default();
             TaggedHit {
@@ -88,7 +92,7 @@ pub async fn vector_hits_with_snippets(
                 route: "vector",
             }
         })
-        .collect())
+        .collect()
 }
 
 /// A vector hit carries no FTS match markers (Lance rows have no text
@@ -196,7 +200,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn vector_hits_with_snippets_finds_a_new_chunk_and_builds_a_real_snippet() {
+    async fn vector_hits_finds_a_new_chunk_and_tagging_builds_a_real_snippet() {
         let dir = scratch("new-hit");
         let mut store = Store::open(&dir.join("vault.sqlite3")).unwrap();
         insert_chunk(
@@ -220,21 +224,22 @@ mod tests {
             .unwrap();
 
         let mut seen = HashSet::new();
-        let hits =
-            vector_hits_with_snippets(&store, &embedder, &index_dir, "bridge", 10, &mut seen)
-                .await
-                .unwrap();
+        let raw_hits = vector_hits(&embedder, &index_dir, "bridge", 10, &mut seen)
+            .await
+            .unwrap();
+        assert!(seen.contains("c-bridge"));
+
+        let hits = tag_vector_hits_with_snippets(&store, raw_hits);
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].chunk_id, "c-bridge");
         assert_eq!(hits[0].route, "vector");
         assert!(hits[0].snippet.contains("suspension bridge"));
-        assert!(seen.contains("c-bridge"));
 
         std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[tokio::test]
-    async fn vector_hits_with_snippets_excludes_a_chunk_already_in_seen() {
+    async fn vector_hits_excludes_a_chunk_already_in_seen() {
         let dir = scratch("dedupe");
         let mut store = Store::open(&dir.join("vault.sqlite3")).unwrap();
         insert_chunk(
@@ -261,10 +266,9 @@ mod tests {
         // duplicate it.
         let mut seen = HashSet::new();
         seen.insert("c-bridge".to_owned());
-        let hits =
-            vector_hits_with_snippets(&store, &embedder, &index_dir, "bridge", 10, &mut seen)
-                .await
-                .unwrap();
+        let hits = vector_hits(&embedder, &index_dir, "bridge", 10, &mut seen)
+            .await
+            .unwrap();
         assert!(hits.is_empty());
 
         std::fs::remove_dir_all(dir).unwrap();
@@ -291,8 +295,7 @@ mod tests {
             .unwrap();
 
         let mut seen = HashSet::new();
-        let hits = vector_hits_with_snippets(
-            &store,
+        let raw_hits = vector_hits(
             &embedder,
             &index_dir,
             "something else entirely",
@@ -301,6 +304,7 @@ mod tests {
         )
         .await
         .unwrap();
+        let hits = tag_vector_hits_with_snippets(&store, raw_hits);
         assert_eq!(hits.len(), 1);
         let snippet = &hits[0].snippet;
         assert!(
