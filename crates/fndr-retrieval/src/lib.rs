@@ -10,6 +10,9 @@ use fndr_store::{Store, StoreError};
 use futures::TryStreamExt;
 use lancedb::query::{ExecutableQuery, QueryBase};
 
+mod merged_search;
+pub use merged_search::{TaggedHit, keyword_hits, vector_hits_with_snippets};
+
 /// An evidence-bearing result from the keyword route. It intentionally carries
 /// stable record and chunk IDs so later composition, deletion, and citation
 /// surfaces all resolve through the same engine path.

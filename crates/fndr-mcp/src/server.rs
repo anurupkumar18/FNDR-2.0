@@ -556,61 +556,41 @@ impl FndrMcpServer {
                 .lock()
                 .map_err(|_| ErrorData::internal_error("store lock poisoned", None))?;
 
-            let keyword_hits = KeywordRetriever::new(&store)
-                .search(&query, limit)
-                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-
-            let seen: HashSet<String> = keyword_hits.iter().map(|h| h.chunk_id.clone()).collect();
-            let hits: Vec<SearchHitOut> = keyword_hits
-                .into_iter()
-                .map(|h| SearchHitOut {
-                    record_id: h.record_id,
-                    chunk_id: h.chunk_id,
-                    source: h.source,
-                    captured_at_ms: h.captured_at_ms as f64,
-                    snippet: h.snippet,
-                    route: "keyword".to_owned(),
-                })
-                .collect();
+            let mut seen = HashSet::new();
+            let hits: Vec<SearchHitOut> =
+                fndr_retrieval::keyword_hits(&store, &query, limit, &mut seen)
+                    .map_err(|e| ErrorData::internal_error(e.to_string(), None))?
+                    .into_iter()
+                    .map(tagged_hit_to_search_hit)
+                    .collect();
             (hits, seen)
         };
 
         let vector_route_available = self.vector_route.is_some();
         if let Some((embedder, index_dir)) = &self.vector_route {
-            // No store lock held here: VectorRetriever::search never
-            // touches `store`, only the snippet-building loop below does.
-            let vector_hits =
-                block_on_from_sync(fndr_retrieval::VectorRetriever::new(index_dir).search(
-                    &query,
-                    limit,
-                    embedder.as_ref(),
-                ))
-                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-
-            let new_hits: Vec<_> = vector_hits
-                .into_iter()
-                .filter(|hit| seen.insert(hit.chunk_id.clone()))
-                .collect();
-
-            if !new_hits.is_empty() {
-                // Re-acquire the lock only for the short span that builds
-                // snippets from the durable store.
+            // `vector_hits_with_snippets` only touches `store` for the
+            // snippet-building span after the embed+Lance round trip
+            // completes, but its signature takes `&Store` for the whole
+            // call, so the guard below is held for that entire call rather
+            // than only the snippet-building portion. Re-acquired here
+            // (never held across the keyword phase above), and dropped as
+            // soon as this call returns.
+            let new_hits = {
                 let store = self
                     .store
                     .lock()
                     .map_err(|_| ErrorData::internal_error("store lock poisoned", None))?;
-                for hit in new_hits {
-                    let snippet = vector_hit_snippet(&store, &hit).unwrap_or_default();
-                    hits.push(SearchHitOut {
-                        record_id: hit.record_id,
-                        chunk_id: hit.chunk_id,
-                        source: hit.source,
-                        captured_at_ms: hit.captured_at_ms as f64,
-                        snippet,
-                        route: "vector".to_owned(),
-                    });
-                }
-            }
+                block_on_from_sync(fndr_retrieval::vector_hits_with_snippets(
+                    &store,
+                    embedder.as_ref(),
+                    index_dir,
+                    &query,
+                    limit,
+                    &mut seen,
+                ))
+                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?
+            };
+            hits.extend(new_hits.into_iter().map(tagged_hit_to_search_hit));
         }
         hits.truncate(limit);
 
@@ -1241,22 +1221,18 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-/// A vector hit carries no FTS match markers (Lance rows have no text
-/// snippet), so this builds a plain truncated excerpt from the same
-/// durable store the keyword route reads, instead of returning an empty
-/// or fabricated snippet.
-fn vector_hit_snippet(store: &Store, hit: &fndr_retrieval::VectorHit) -> Option<String> {
-    const SNIPPET_CHARS: usize = 200;
-    let evidence = store.record_evidence(&hit.record_id).ok()??;
-    let chunk = evidence
-        .chunks
-        .into_iter()
-        .find(|c| c.chunk_id == hit.chunk_id)?;
-    if chunk.text.chars().count() <= SNIPPET_CHARS {
-        Some(chunk.text)
-    } else {
-        let truncated: String = chunk.text.chars().take(SNIPPET_CHARS).collect();
-        Some(format!("{truncated}…"))
+/// Adapts `fndr-retrieval`'s route-agnostic `TaggedHit` to this crate's own
+/// MCP-facing `SearchHitOut` wire type. Kept a straight field-for-field copy
+/// so the two types can evolve independently at their respective layer
+/// boundaries.
+fn tagged_hit_to_search_hit(hit: fndr_retrieval::TaggedHit) -> SearchHitOut {
+    SearchHitOut {
+        record_id: hit.record_id,
+        chunk_id: hit.chunk_id,
+        source: hit.source,
+        captured_at_ms: hit.captured_at_ms as f64,
+        snippet: hit.snippet,
+        route: hit.route.to_owned(),
     }
 }
 
