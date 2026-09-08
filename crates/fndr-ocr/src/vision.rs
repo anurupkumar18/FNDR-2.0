@@ -160,6 +160,15 @@ pub struct RecognizedText {
 }
 
 impl RecognizedText {
+    /// Decide whether a frame's OCR evidence is too weak to store.
+    ///
+    /// The rejection rules are the explicit checks below, and `min_chars`
+    /// (the scheduler's `min_ocr_chars`) is the single source of truth for
+    /// "too short". `text_volume_qualifies` is consulted only as a positive
+    /// override; it can rescue a frame, never discard one. Inverting that
+    /// (`!text_volume_qualifies(..)`) silently raised the effective floor to
+    /// its internal 80-char admit threshold and discarded almost every real
+    /// short capture, which is what this shape exists to prevent.
     pub fn is_low_signal(&self, min_chars: usize) -> bool {
         let char_count = self.text.trim().len();
         if char_count < min_chars {
@@ -169,13 +178,14 @@ impl RecognizedText {
         if self.confidence < 0.15 {
             return true;
         }
-        // Single block with truly low (non-screen-typical) confidence.
-        if self.block_count <= 1 && self.confidence < 0.35 {
-            return true;
-        }
         // Volume-based override: text-heavy frames are not low signal
         // even when Apple Vision confidence is screen-typical (~0.5).
-        !text_volume_qualifies(char_count, self.confidence, self.block_count)
+        // ADMIT-only. A `false` here must never reject a frame.
+        if text_volume_qualifies(char_count, self.confidence, self.block_count) {
+            return false;
+        }
+        // Single block with truly low (non-screen-typical) confidence.
+        self.block_count <= 1 && self.confidence < 0.35
     }
 }
 
@@ -609,17 +619,31 @@ fn size_regex() -> &'static Regex {
     RE.get_or_init(|| Regex::new(r"^\d+(\.\d+)?\s*(B|KB|MB|GB|TB)$").expect("valid size regex"))
 }
 
-/// Assess whether OCR evidence is worth storing based on text volume + confidence,
-/// independently of Apple Vision's per-line confidence scores.
+/// Assess whether OCR evidence is *definitely* worth storing based on text
+/// volume + confidence, independently of Apple Vision's per-line confidence.
 ///
 /// Screen OCR naturally produces confidence ~0.40–0.65 regardless of text quality
 /// because Apple Vision's confidence model is calibrated for documents, not UI.
 /// Do not use confidence alone to gate high-volume frames.
+///
+/// This is a high-precision ADMIT rule: `true` means "store this". `false`
+/// means only "not proven high-value", NOT "discard": the complement of
+/// "definitely keep" is not "definitely junk". `is_low_signal` owns rejection.
+///
+/// Measured on macOS 26 (2026-09-07, 13 rendered screens spanning terminal,
+/// chat, code, prose, pristine and degraded): `VNRecognizeTextRequest` at
+/// `Accurate` level returns a per-line confidence of exactly 0.50 for every
+/// legible line, and never above it. The `>= 0.55` arm below is therefore
+/// unreachable in production; it is kept only because these constants are
+/// calibrated as an admit rule and loosening them would widen admission
+/// rather than fix anything.
 pub fn text_volume_qualifies(char_count: usize, ocr_confidence: f32, block_count: usize) -> bool {
     if char_count == 0 {
         return false;
     }
-    // Hard floor: very short text is never worth storing.
+    // Floor for the volume-based admit path only. Frames under this length can
+    // still be stored via `is_low_signal`'s own rules; this is not a hard floor
+    // on storage (see the porting note on `is_low_signal`).
     if char_count < 80 {
         return false;
     }
@@ -792,6 +816,88 @@ mod tests {
             ocr_stats: OcrAggregateStats::default(),
         };
         assert!(rt.is_low_signal(10));
+    }
+
+    // Regression tests for "only one memory stored over a session of active
+    // use". The v1 -> v2 port turned `text_volume_qualifies` from a positive
+    // override into `!text_volume_qualifies(..)`, a mandatory reject gate.
+    // That silently raised the effective storage floor from the configured
+    // `min_ocr_chars` (12) to the admit rule's internal 80 chars, and made the
+    // 80..200 band unreachable outright (it wants confidence >= 0.55; Apple
+    // Vision never returns above 0.50).
+    //
+    // Every number below was measured by running the real Apple Vision engine
+    // (`OcrEngine::recognize_with_metadata`) over a rendered 3024x1964 retina
+    // screenshot of the described content on 2026-09-07, macOS 26.
+
+    fn recognized(text_len: usize, confidence: f32, block_count: usize) -> RecognizedText {
+        RecognizedText {
+            text: "a".repeat(text_len),
+            confidence,
+            block_count,
+            ocr_stats: OcrAggregateStats::default(),
+        }
+    }
+
+    #[test]
+    fn short_terminal_output_is_not_low_signal() {
+        // `git status` on a clean tree: 144 chars, 4 blocks, confidence 0.50.
+        // Legitimate everyday content; must be stored.
+        assert!(!recognized(144, 0.50, 4).is_low_signal(12));
+    }
+
+    #[test]
+    fn medium_terminal_listing_is_not_low_signal() {
+        // `ls -la` with 4 files: 313 chars, 9 blocks, confidence 0.50. Misses
+        // the 200+ admit branch only because that wants 10 blocks; must still
+        // be stored.
+        assert!(!recognized(313, 0.50, 9).is_low_signal(12));
+    }
+
+    #[test]
+    fn short_chat_exchange_is_not_low_signal() {
+        // Three-bubble iMessage exchange: 130 chars, 4 blocks, confidence 0.50.
+        assert!(!recognized(130, 0.50, 4).is_low_signal(12));
+    }
+
+    #[test]
+    fn single_log_line_is_not_low_signal() {
+        // One timestamped ERROR line: 72 chars, 1 block, confidence 0.50.
+        // Single-block, but 0.50 is screen-typical, not the < 0.35 that marks
+        // a genuinely bad single-block read.
+        assert!(!recognized(72, 0.50, 1).is_low_signal(12));
+    }
+
+    #[test]
+    fn short_code_diff_is_not_low_signal() {
+        // Two-line diff hunk with a file header: 107 chars, 4 blocks, 0.50.
+        assert!(!recognized(107, 0.50, 4).is_low_signal(12));
+    }
+
+    #[test]
+    fn volume_admit_rule_never_rejects_on_its_own() {
+        // The porting regression, pinned directly: this frame fails
+        // `text_volume_qualifies` yet passes every explicit rejection rule, so
+        // it must be stored. Under `!text_volume_qualifies(..)` it was dropped.
+        let rt = recognized(144, 0.50, 4);
+        assert!(!text_volume_qualifies(144, 0.50, 4));
+        assert!(!rt.is_low_signal(12));
+    }
+
+    #[test]
+    fn min_ocr_chars_is_the_effective_floor() {
+        // The configured floor must be the real one: nothing below it stored,
+        // everything just above it kept. An 80-char hidden floor made the
+        // `min_ocr_chars` knob a lie (PRD P0.11, no silent degradation).
+        assert!(recognized(11, 0.50, 3).is_low_signal(12));
+        assert!(!recognized(13, 0.50, 3).is_low_signal(12));
+    }
+
+    #[test]
+    fn chrome_only_frame_is_still_low_signal() {
+        // Noise control: a desktop with only a menu bar and a "Sign in" button
+        // OCRs to 0 chars / 0 blocks / 0.0 after noise filtering (measured).
+        assert!(recognized(0, 0.0, 0).is_low_signal(12));
     }
 
     #[test]
