@@ -10,11 +10,12 @@ use fndr_capture::{
     PersistenceOutcome, PipelineError, PreCaptureGate, SkipReason,
 };
 use fndr_memory::{CaptureForPersistence, PersistCaptureOutcome, persist_capture};
-use fndr_ocr::OcrEngine;
+use fndr_ocr::{OcrEngine, RecognizedText};
 use fndr_privacy::{
     Blocklist, SafetyContext, SafetyDecision, SafetyReason, evaluate, sanitize_url_for_storage,
 };
 use fndr_store::{Store, StoreError};
+use fndr_textsignal::build_high_signal_text_for_app;
 
 /// The metadata-only safety check which runs before `FrameSource::grab`.
 #[derive(Debug, Clone)]
@@ -49,8 +50,10 @@ impl PreCaptureGate for PrivacyGate {
     }
 }
 
-/// Converts the existing Vision result into the capture pipeline's normalized
-/// output without copying its low-signal policy into another crate.
+/// Converts Vision output into app-aware, high-signal evidence before either
+/// semantic deduplication or persistence can observe it. The cleanup itself is
+/// the targeted v1 port owned by `fndr-textsignal`; this adapter only composes
+/// that policy with the engine-owned low-signal decision.
 pub struct VisionOcrAdapter {
     engine: OcrEngine,
 }
@@ -62,17 +65,33 @@ impl VisionOcrAdapter {
 }
 
 impl OcrRecognizer for VisionOcrAdapter {
-    fn recognize(&self, png: &[u8], min_chars: usize) -> Result<OcrOutput, PipelineError> {
+    fn recognize(
+        &self,
+        png: &[u8],
+        app_name: &str,
+        min_chars: usize,
+    ) -> Result<OcrOutput, PipelineError> {
         let (recognized, _) = self
             .engine
             .recognize_with_metadata(png)
             .map_err(|error| PipelineError::new(CaptureStage::Ocr, error.to_string()))?;
-        Ok(OcrOutput {
-            low_signal: recognized.is_low_signal(min_chars),
-            text: recognized.text,
-            confidence: recognized.confidence,
-            block_count: recognized.block_count,
-        })
+        Ok(normalize_recognized_text(app_name, recognized, min_chars))
+    }
+}
+
+fn normalize_recognized_text(
+    app_name: &str,
+    mut recognized: RecognizedText,
+    min_chars: usize,
+) -> OcrOutput {
+    let high_signal = build_high_signal_text_for_app(app_name, &recognized.text);
+    recognized.text = high_signal.text;
+
+    OcrOutput {
+        low_signal: recognized.is_low_signal(min_chars),
+        text: recognized.text,
+        confidence: recognized.confidence,
+        block_count: recognized.block_count,
     }
 }
 
@@ -202,6 +221,7 @@ fn store_error(error: StoreError) -> PipelineError {
 mod tests {
     use super::*;
     use fndr_capture::CaptureSink;
+    use fndr_ocr::OcrAggregateStats;
 
     fn context(app: &str, title: &str, url: Option<&str>) -> CaptureContext {
         CaptureContext {
@@ -220,6 +240,129 @@ mod tests {
             "session-a",
         )
         .unwrap()
+    }
+
+    fn recognized(text: &str) -> RecognizedText {
+        RecognizedText {
+            text: text.to_owned(),
+            confidence: 0.5,
+            block_count: text.lines().count(),
+            ocr_stats: OcrAggregateStats::default(),
+        }
+    }
+
+    #[test]
+    fn normalizes_everyday_app_evidence_before_the_pipeline() {
+        let fixtures = [
+            (
+                "Google Chrome",
+                "[LOW_CONF] New Tab\n[LOW_CONF] Home\nImplement robust OCR cleanup for capture pipeline",
+                "Implement robust OCR cleanup",
+                "New Tab",
+            ),
+            (
+                "Terminal",
+                "[LOW_CONF] cargo check\nsrc-tauri/src/capture/mod.rs\nfn persist_capture()",
+                "src-tauri/src/capture/mod.rs",
+                "[LOW_CONF]",
+            ),
+            (
+                "Mail",
+                "Inbox\nStarred\nSubject: Updated deployment plan\nPlease review the rollout risks before 4 PM.",
+                "Subject: Updated deployment plan",
+                "Starred",
+            ),
+            (
+                "Mail",
+                "[LOW_CONF] 请审查产品部署计划和风险\nRelease checklist is ready for review",
+                "请审查产品部署计划和风险",
+                "[LOW_CONF]",
+            ),
+        ];
+
+        for (app_name, raw, expected, rejected) in fixtures {
+            let output = normalize_recognized_text(app_name, recognized(raw), 12);
+            assert!(!output.low_signal, "{app_name} fixture should be admitted");
+            assert!(
+                output.text.contains(expected),
+                "{app_name}: {}",
+                output.text
+            );
+            assert!(
+                !output.text.contains(rejected),
+                "{app_name}: {}",
+                output.text
+            );
+        }
+    }
+
+    #[test]
+    fn chrome_only_evidence_becomes_an_observable_low_signal_skip() {
+        let output = normalize_recognized_text(
+            "Google Chrome",
+            recognized("[LOW_CONF] New Tab\nHome\nTrending\nNotifications\nExplore"),
+            12,
+        );
+
+        assert!(output.low_signal);
+        assert!(output.text.is_empty());
+    }
+
+    #[test]
+    fn literal_confidence_token_in_captured_code_is_preserved() {
+        let output = normalize_recognized_text(
+            "Terminal",
+            recognized("let marker = \"[LOW_CONF]\";\nPersist literal tokens in captured code"),
+            12,
+        );
+
+        assert!(!output.low_signal);
+        assert!(output.text.contains("let marker = \"[LOW_CONF]\";"));
+    }
+
+    #[test]
+    fn normalized_browser_evidence_is_what_durable_search_observes() {
+        let output = normalize_recognized_text(
+            "Google Chrome",
+            recognized(
+                "[LOW_CONF] New Tab\n[LOW_CONF] Home\nImplement durable OCR evidence cleanup",
+            ),
+            12,
+        );
+        let mut sink = sink();
+        let frame = Frame {
+            png: vec![],
+            captured_at_ms: 1_100,
+            perceptual_signature: None,
+        };
+
+        assert_eq!(
+            sink.persist_capture(
+                &context("Google Chrome", "FNDR work", None),
+                &frame,
+                &output,
+            ),
+            Ok(PersistenceOutcome::Stored)
+        );
+        assert_eq!(
+            sink.store()
+                .search_chunks("durable evidence cleanup", 10)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(
+            sink.store()
+                .search_chunks("New Tab", 10)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            sink.store()
+                .search_chunks("LOW_CONF", 10)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]

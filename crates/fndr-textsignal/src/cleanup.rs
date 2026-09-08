@@ -1,5 +1,7 @@
 // Ported from FNDR v1 src-tauri/src/capture/text_cleanup.rs (reference/v1) per ADR-005.
 // Heuristic constants and their tuning comments move exactly (they encode the why).
+// The v2 wiring corrects two donor defects: only an engine-owned line prefix is
+// a LOW_CONF marker, and Unicode quality ratios count characters, not UTF-8 bytes.
 //! Drop obvious browser chrome from OCR text before embeddings and storage.
 //!
 //! Vision still sees the full screenshot; we only trim lines that usually come from
@@ -189,8 +191,15 @@ fn normalize_inline(line: &str) -> String {
     line.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-fn strip_low_conf_marker(line: &str) -> String {
-    normalize_inline(&line.replace("[LOW_CONF]", " "))
+fn low_conf_payload(line: &str) -> (&str, bool) {
+    let trimmed = line.trim();
+    if trimmed == "[LOW_CONF]" {
+        return ("", true);
+    }
+    match trimmed.strip_prefix("[LOW_CONF] ") {
+        Some(payload) => (payload, true),
+        None => (trimmed, false),
+    }
 }
 
 fn truncate_snippet(text: &str, max_chars: usize) -> String {
@@ -464,8 +473,8 @@ pub fn build_high_signal_text_for_app(app_name: &str, text: &str) -> HighSignalT
     let mut scored_lines = 0usize;
 
     for line in text.lines() {
-        let has_low_conf = line.contains("[LOW_CONF]");
-        let normalized = strip_low_conf_marker(line.trim());
+        let (payload, has_low_conf) = low_conf_payload(line);
+        let normalized = normalize_inline(payload);
         if normalized.is_empty() {
             continue;
         }
@@ -482,7 +491,7 @@ pub fn build_high_signal_text_for_app(app_name: &str, text: &str) -> HighSignalT
             stats.dropped_noise_lines += 1;
             continue;
         }
-        if quality < 0.36 || normalized.len() < MIN_LINE_LEN {
+        if quality < 0.36 || normalized.chars().count() < MIN_LINE_LEN {
             stats.dropped_low_signal_lines += 1;
             continue;
         }
@@ -504,7 +513,12 @@ pub fn build_high_signal_text_for_app(app_name: &str, text: &str) -> HighSignalT
     };
 
     if out.trim().is_empty() {
-        out = reduce_chrome_noise_for_app(app_name, &text.replace("[LOW_CONF]", " "));
+        let marker_free = text
+            .lines()
+            .map(|line| low_conf_payload(line).0)
+            .collect::<Vec<_>>()
+            .join("\n");
+        out = reduce_chrome_noise_for_app(app_name, &marker_free);
     }
 
     HighSignalText { text: out, stats }
@@ -512,12 +526,13 @@ pub fn build_high_signal_text_for_app(app_name: &str, text: &str) -> HighSignalT
 
 fn line_quality_score(app_name: &str, line: &str, has_low_conf: bool) -> f32 {
     let symbol = symbol_ratio(line).clamp(0.0, 1.0);
-    let alpha = if line.is_empty() {
+    let char_count = line.chars().count();
+    let alpha = if char_count == 0 {
         0.0
     } else {
-        line.chars().filter(|ch| ch.is_alphanumeric()).count() as f32 / line.len() as f32
+        line.chars().filter(|ch| ch.is_alphanumeric()).count() as f32 / char_count as f32
     };
-    let len_score = (line.len().min(180) as f32 / 180.0).clamp(0.0, 1.0);
+    let len_score = (char_count.min(180) as f32 / 180.0).clamp(0.0, 1.0);
     let mut score = alpha * 0.52 + (1.0 - symbol) * 0.28 + len_score * 0.20;
 
     if has_low_conf {
@@ -848,6 +863,22 @@ mod tests {
         assert!(!out.text.contains("[LOW_CONF]"));
         assert!(out.stats.total_lines >= 3);
         assert!(out.stats.kept_lines >= 1);
+    }
+
+    #[test]
+    fn high_signal_builder_preserves_literal_low_conf_tokens_in_code() {
+        let raw = "let marker = \"[LOW_CONF]\";\nPersist literal tokens in captured source code";
+        let out = build_high_signal_text_for_app("Terminal", raw);
+        assert!(out.text.contains("let marker = \"[LOW_CONF]\";"));
+        assert_eq!(out.stats.low_conf_lines, 0);
+    }
+
+    #[test]
+    fn high_signal_builder_scores_multilingual_text_by_characters() {
+        let raw = "[LOW_CONF] 请审查产品部署计划和风险\nRelease checklist is ready for review";
+        let out = build_high_signal_text_for_app("Mail", raw);
+        assert!(out.text.contains("请审查产品部署计划和风险"));
+        assert!(out.text.contains("Release checklist"));
     }
 
     #[test]

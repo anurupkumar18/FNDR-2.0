@@ -105,8 +105,15 @@ pub struct OcrOutput {
 }
 
 /// The OCR boundary; implementations must return cleaned, not raw, text.
+/// `app_name` is metadata acquired before pixels and lets the adapter apply
+/// app-aware cleanup without leaking that policy into the scheduler.
 pub trait OcrRecognizer {
-    fn recognize(&self, png: &[u8], min_chars: usize) -> Result<OcrOutput, PipelineError>;
+    fn recognize(
+        &self,
+        png: &[u8],
+        app_name: &str,
+        min_chars: usize,
+    ) -> Result<OcrOutput, PipelineError>;
 }
 
 /// The result from the final persistence boundary.
@@ -295,7 +302,10 @@ where
             return CaptureTickOutcome::Skipped(SkipReason::PerceptualDuplicate);
         }
 
-        let ocr = match self.ocr.recognize(&frame.png, self.config.min_ocr_chars) {
+        let ocr = match self
+            .ocr
+            .recognize(&frame.png, &context.app_name, self.config.min_ocr_chars)
+        {
             Ok(ocr) => ocr,
             Err(error) => return failed(SkipReason::OcrFailed, error),
         };
@@ -394,7 +404,12 @@ mod tests {
     struct Ocr(OcrOutput);
 
     impl OcrRecognizer for Ocr {
-        fn recognize(&self, _png: &[u8], _min_chars: usize) -> Result<OcrOutput, PipelineError> {
+        fn recognize(
+            &self,
+            _png: &[u8],
+            _app_name: &str,
+            _min_chars: usize,
+        ) -> Result<OcrOutput, PipelineError> {
             Ok(self.0.clone())
         }
     }
