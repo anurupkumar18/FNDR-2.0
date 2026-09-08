@@ -15,7 +15,7 @@ use fndr_privacy::{
     Blocklist, SafetyContext, SafetyDecision, SafetyReason, evaluate, sanitize_url_for_storage,
 };
 use fndr_store::{Store, StoreError};
-use fndr_textsignal::build_high_signal_text_for_app;
+use fndr_textsignal::{AppIdentity, build_high_signal_text_for_app};
 
 /// The metadata-only safety check which runs before `FrameSource::grab`.
 #[derive(Debug, Clone)]
@@ -69,22 +69,27 @@ impl OcrRecognizer for VisionOcrAdapter {
         &self,
         png: &[u8],
         app_name: &str,
+        bundle_id: Option<&str>,
         min_chars: usize,
     ) -> Result<OcrOutput, PipelineError> {
         let (recognized, _) = self
             .engine
             .recognize_with_metadata(png)
             .map_err(|error| PipelineError::new(CaptureStage::Ocr, error.to_string()))?;
-        Ok(normalize_recognized_text(app_name, recognized, min_chars))
+        Ok(normalize_recognized_text(
+            AppIdentity::new(app_name, bundle_id),
+            recognized,
+            min_chars,
+        ))
     }
 }
 
 fn normalize_recognized_text(
-    app_name: &str,
+    app: AppIdentity<'_>,
     mut recognized: RecognizedText,
     min_chars: usize,
 ) -> OcrOutput {
-    let high_signal = build_high_signal_text_for_app(app_name, &recognized.text);
+    let high_signal = build_high_signal_text_for_app(app, &recognized.text);
     recognized.text = high_signal.text;
 
     OcrOutput {
@@ -281,7 +286,8 @@ mod tests {
         ];
 
         for (app_name, raw, expected, rejected) in fixtures {
-            let output = normalize_recognized_text(app_name, recognized(raw), 12);
+            let output =
+                normalize_recognized_text(AppIdentity::from_name(app_name), recognized(raw), 12);
             assert!(!output.low_signal, "{app_name} fixture should be admitted");
             assert!(
                 output.text.contains(expected),
@@ -299,7 +305,7 @@ mod tests {
     #[test]
     fn chrome_only_evidence_becomes_an_observable_low_signal_skip() {
         let output = normalize_recognized_text(
-            "Google Chrome",
+            AppIdentity::from_name("Google Chrome"),
             recognized("[LOW_CONF] New Tab\nHome\nTrending\nNotifications\nExplore"),
             12,
         );
@@ -309,9 +315,43 @@ mod tests {
     }
 
     #[test]
+    fn a_renamed_browser_is_cleaned_by_its_bundle_identity_not_its_name() {
+        // The localized app name is user- and locale-controlled; the bundle
+        // identifier is not. Before this wiring a renamed or non-English
+        // Chrome classified as `Other`, so its tab-strip and nav labels were
+        // held to the generic thresholds and reached durable memory.
+        let raw = "Navegacion privada\nNew Tab\nTrending\nShip the durable capture cleanup slice";
+
+        let by_bundle = normalize_recognized_text(
+            AppIdentity::new("Navegador", Some("com.google.Chrome")),
+            recognized(raw),
+            12,
+        );
+        let by_name_only =
+            normalize_recognized_text(AppIdentity::from_name("Navegador"), recognized(raw), 12);
+
+        assert!(
+            by_bundle
+                .text
+                .contains("Ship the durable capture cleanup slice")
+        );
+        assert!(
+            !by_bundle.text.contains("Trending"),
+            "browser nav label survived bundle-aware cleanup: {}",
+            by_bundle.text
+        );
+        assert!(
+            by_name_only.text.contains("Trending"),
+            "the name alone should not have identified this browser, \
+             so this fixture would not prove the bundle did the work: {}",
+            by_name_only.text
+        );
+    }
+
+    #[test]
     fn literal_confidence_token_in_captured_code_is_preserved() {
         let output = normalize_recognized_text(
-            "Terminal",
+            AppIdentity::from_name("Terminal"),
             recognized("let marker = \"[LOW_CONF]\";\nPersist literal tokens in captured code"),
             12,
         );
@@ -323,7 +363,7 @@ mod tests {
     #[test]
     fn normalized_browser_evidence_is_what_durable_search_observes() {
         let output = normalize_recognized_text(
-            "Google Chrome",
+            AppIdentity::from_name("Google Chrome"),
             recognized(
                 "[LOW_CONF] New Tab\n[LOW_CONF] Home\nImplement durable OCR evidence cleanup",
             ),

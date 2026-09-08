@@ -105,13 +105,21 @@ pub struct OcrOutput {
 }
 
 /// The OCR boundary; implementations must return cleaned, not raw, text.
-/// `app_name` is metadata acquired before pixels and lets the adapter apply
-/// app-aware cleanup without leaking that policy into the scheduler.
+///
+/// `app_name` and `bundle_id` are metadata acquired before pixels and let the
+/// adapter apply app-aware cleanup without leaking that policy into the
+/// scheduler. Both are passed because the pair is the app's identity: the
+/// bundle identifier is authoritative and stable, while the localized name is
+/// user- and locale-controlled and only resolves apps the identifier misses.
+/// The scheduler forwards them and stays policy-agnostic; it deliberately does
+/// not hand the recognizer the whole `CaptureContext`, whose URL and window
+/// title are not the OCR boundary's business.
 pub trait OcrRecognizer {
     fn recognize(
         &self,
         png: &[u8],
         app_name: &str,
+        bundle_id: Option<&str>,
         min_chars: usize,
     ) -> Result<OcrOutput, PipelineError>;
 }
@@ -302,10 +310,12 @@ where
             return CaptureTickOutcome::Skipped(SkipReason::PerceptualDuplicate);
         }
 
-        let ocr = match self
-            .ocr
-            .recognize(&frame.png, &context.app_name, self.config.min_ocr_chars)
-        {
+        let ocr = match self.ocr.recognize(
+            &frame.png,
+            &context.app_name,
+            context.bundle_id.as_deref(),
+            self.config.min_ocr_chars,
+        ) {
             Ok(ocr) => ocr,
             Err(error) => return failed(SkipReason::OcrFailed, error),
         };
@@ -360,6 +370,7 @@ fn failed(reason: SkipReason, error: PipelineError) -> CaptureTickOutcome {
 mod tests {
     use std::cell::RefCell;
     use std::collections::VecDeque;
+    use std::rc::Rc;
 
     use super::*;
     use crate::PerceptualSignature;
@@ -408,9 +419,34 @@ mod tests {
             &self,
             _png: &[u8],
             _app_name: &str,
+            _bundle_id: Option<&str>,
             _min_chars: usize,
         ) -> Result<OcrOutput, PipelineError> {
             Ok(self.0.clone())
+        }
+    }
+
+    /// Records the app identity the pipeline forwards, so the OCR contract is
+    /// tested rather than assumed.
+    type SeenIdentity = Rc<RefCell<Option<(String, Option<String>)>>>;
+
+    struct RecordingOcr(SeenIdentity);
+
+    impl OcrRecognizer for RecordingOcr {
+        fn recognize(
+            &self,
+            _png: &[u8],
+            app_name: &str,
+            bundle_id: Option<&str>,
+            _min_chars: usize,
+        ) -> Result<OcrOutput, PipelineError> {
+            *self.0.borrow_mut() = Some((app_name.to_owned(), bundle_id.map(str::to_owned)));
+            Ok(OcrOutput {
+                text: "meaningful captured text".to_owned(),
+                confidence: 0.9,
+                block_count: 3,
+                low_signal: false,
+            })
         }
     }
 
@@ -643,5 +679,36 @@ mod tests {
             CaptureTickOutcome::Skipped(SkipReason::FinalPrivacy)
         );
         assert_eq!(pipeline.sink().captures, 1);
+    }
+
+    #[test]
+    fn the_ocr_boundary_receives_the_full_app_identity() {
+        // Cleanup policy is app-aware and the bundle identifier is its only
+        // authoritative signal, so the scheduler must forward both halves.
+        // Forwarding the name alone is what left the policy guessing from a
+        // user- and locale-controlled string.
+        let seen: SeenIdentity = SeenIdentity::default();
+        let mut pipeline = CapturePipeline::new(
+            Context(CaptureContext {
+                app_name: "Navegador".to_owned(),
+                bundle_id: Some("com.google.Chrome".to_owned()),
+                window_title: "Project".to_owned(),
+                url: None,
+                observed_at_ms: 1_000,
+            }),
+            Frames(RefCell::new(
+                vec![frame(Some(signature([0, 0, 0])), 1_000)].into(),
+            )),
+            Gate(GateDecision::Allow),
+            RecordingOcr(Rc::clone(&seen)),
+            Sink::default(),
+            CapturePipelineConfig::default(),
+        );
+
+        assert_eq!(pipeline.run_tick(), CaptureTickOutcome::Stored);
+        assert_eq!(
+            seen.borrow().clone(),
+            Some(("Navegador".to_owned(), Some("com.google.Chrome".to_owned())))
+        );
     }
 }

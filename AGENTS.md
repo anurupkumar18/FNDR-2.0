@@ -469,6 +469,28 @@ output is fully regenerable and never worth protecting. Don't let a low-disk
 warning block work silently -- surface it and clean instead of routing around
 it with partial builds.
 
+## 2026-09-08 · A fresh worktree fails `make test` at the UI lane
+Cost: a red full gate that looked like a regression and was `tsc: command
+not found`; the whole Rust workspace had already passed.
+Root cause: `git worktree add` gives a new tree without `ui/node_modules`,
+and `make test`'s `test-ui` target runs `tsc`/`vitest` directly rather than
+installing first. `make bootstrap` (scripts/dev-setup.sh) is what installs.
+Rule: run `npm ci` in `ui/` (or `make bootstrap`) as the first command in a
+new worktree, before reading a `make test` failure as a code problem.
+
+## 2026-09-08 · Substring app matching misroutes AppleScript, not just cleanup
+Cost: would have shipped a metadata source that attributes one app's URL to
+another app's screenshot.
+Root cause: the v1 classifier identified apps with `name.contains(...)`.
+"Search" contains `arc` and "Knowledge Base" contains `edge`. In
+`fndr-textsignal` that only mis-tuned line thresholds, but the same pattern
+in `fndr-capture::foreground` selects which browser's AppleScript dictionary
+to query, and a backgrounded browser answers with its own front tab.
+Rule: identify apps by `CFBundleIdentifier` first (exact, then family
+prefix) and treat the localized name as a whole-token fallback; never
+substring-match an app name. Mozilla is the worked example for why family
+prefixes need care: `org.mozilla.` covers Thunderbird too.
+
 <!-- Inlined from .claude/skills/fndr-feature-dev/SKILL.md -->
 
 

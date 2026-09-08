@@ -10,6 +10,8 @@
 
 use std::collections::HashSet;
 
+use crate::app::AppIdentity;
+
 /// Match the default OCR `min_line_length` so we do not resurrect junk lines.
 const MIN_LINE_LEN: usize = 7;
 const MAX_FALLBACK_SNIPPET_CHARS: usize = 220;
@@ -216,9 +218,9 @@ fn snippet_dedup_key(value: &str) -> String {
     normalize_inline(value).to_lowercase()
 }
 
-fn title_is_generic_for_app(app_name: &str, title: &str) -> bool {
+fn title_is_generic_for_app(app: AppIdentity<'_>, title: &str) -> bool {
     let title_lower = title.to_lowercase();
-    let app_lower = app_name.to_lowercase();
+    let app_lower = app.name().to_lowercase();
 
     if !app_lower.is_empty() && title_lower == app_lower {
         return true;
@@ -228,32 +230,6 @@ fn title_is_generic_for_app(app_name: &str, title: &str) -> bool {
         title_lower.as_str(),
         "new tab" | "untitled" | "home" | "settings" | "preferences" | "dashboard" | "start page"
     )
-}
-
-fn is_browser_app(app_name: &str) -> bool {
-    let lower = app_name.to_lowercase();
-    lower.contains("chrome")
-        || lower.contains("safari")
-        || lower.contains("arc")
-        || lower.contains("firefox")
-        || lower.contains("edge")
-}
-
-fn is_code_app(app_name: &str) -> bool {
-    let lower = app_name.to_lowercase();
-    lower.contains("terminal")
-        || lower.contains("iterm")
-        || lower.contains("vscode")
-        || lower.contains("code")
-        || lower.contains("cursor")
-}
-
-fn is_mail_app(app_name: &str) -> bool {
-    let lower = app_name.to_lowercase();
-    lower.contains("gmail")
-        || lower.contains("mail")
-        || lower.contains("outlook")
-        || lower.contains("superhuman")
 }
 
 fn looks_like_email_header(line: &str) -> bool {
@@ -277,10 +253,10 @@ fn is_generic_browser_label(line: &str) -> bool {
         .any(|label| lower == *label || lower.starts_with(&format!("{} ", label)))
 }
 
-fn should_drop_line(app_name: &str, line: &str) -> bool {
-    let browser_app = is_browser_app(app_name);
-    let code_app = is_code_app(app_name);
-    let mail_app = is_mail_app(app_name);
+fn should_drop_line(app: AppIdentity<'_>, line: &str) -> bool {
+    let browser_app = app.is_browser();
+    let code_app = app.is_code();
+    let mail_app = app.is_mail();
 
     if is_separator_line(line) {
         return true;
@@ -336,7 +312,7 @@ fn should_drop_line(app_name: &str, line: &str) -> bool {
     false
 }
 
-fn is_useful_snippet_line(app_name: &str, line: &str) -> bool {
+fn is_useful_snippet_line(app: AppIdentity<'_>, line: &str) -> bool {
     let normalized = normalize_inline(line);
     if normalized.len() < MIN_LINE_LEN {
         return false;
@@ -344,17 +320,17 @@ fn is_useful_snippet_line(app_name: &str, line: &str) -> bool {
     if normalized.len() > 240 {
         return false;
     }
-    if should_drop_line(app_name, &normalized) {
+    if should_drop_line(app, &normalized) {
         return false;
     }
-    if title_is_generic_for_app(app_name, &normalized) {
+    if title_is_generic_for_app(app, &normalized) {
         return false;
     }
     true
 }
 
 /// Estimate noise score for ranking penalties (0 = clean, 1 = mostly noise).
-pub fn estimate_noise_score(app_name: &str, text: &str) -> f32 {
+pub fn estimate_noise_score(app: AppIdentity<'_>, text: &str) -> f32 {
     let mut total = 0usize;
     let mut noisy_weight = 0.0_f32;
     for line in text.lines() {
@@ -363,7 +339,7 @@ pub fn estimate_noise_score(app_name: &str, text: &str) -> f32 {
             continue;
         }
         total += 1;
-        if should_drop_line(app_name, &line) || line.len() < MIN_LINE_LEN {
+        if should_drop_line(app, &line) || line.len() < MIN_LINE_LEN {
             noisy_weight += 1.0;
             continue;
         }
@@ -382,17 +358,17 @@ pub fn estimate_noise_score(app_name: &str, text: &str) -> f32 {
 }
 
 /// Build a compact fallback snippet when model summarization is unavailable.
-pub fn concise_fallback_snippet(app_name: &str, window_title: &str, text: &str) -> String {
+pub fn concise_fallback_snippet(app: AppIdentity<'_>, window_title: &str, text: &str) -> String {
     let normalized_title = normalize_inline(window_title.trim());
     let title_is_useful =
-        !normalized_title.is_empty() && is_useful_snippet_line(app_name, &normalized_title);
+        !normalized_title.is_empty() && is_useful_snippet_line(app, &normalized_title);
     let mut details = Vec::new();
     let mut seen = HashSet::new();
     if title_is_useful {
         seen.insert(snippet_dedup_key(&normalized_title));
     }
     for line in text.lines() {
-        if is_useful_snippet_line(app_name, line) {
+        if is_useful_snippet_line(app, line) {
             let normalized = normalize_inline(line);
             if normalized.is_empty() {
                 continue;
@@ -431,15 +407,15 @@ pub fn concise_fallback_snippet(app_name: &str, window_title: &str, text: &str) 
         return truncate_snippet(&normalized_title, MAX_FALLBACK_SNIPPET_CHARS);
     }
 
-    if !app_name.trim().is_empty() {
-        return format!("Using {}", app_name.trim());
+    if !app.name().trim().is_empty() {
+        return format!("Using {}", app.name().trim());
     }
 
     String::new()
 }
 
 /// Remove noisy lines; keep structure and duplicates handled upstream in OCR when possible.
-pub fn reduce_chrome_noise_for_app(app_name: &str, text: &str) -> String {
+pub fn reduce_chrome_noise_for_app(app: AppIdentity<'_>, text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut seen = HashSet::new();
 
@@ -448,7 +424,7 @@ pub fn reduce_chrome_noise_for_app(app_name: &str, text: &str) -> String {
         if trimmed.len() < MIN_LINE_LEN {
             continue;
         }
-        if should_drop_line(app_name, &trimmed) {
+        if should_drop_line(app, &trimmed) {
             tracing::trace!("Dropped likely chrome/noise line from capture text");
             continue;
         }
@@ -465,7 +441,7 @@ pub fn reduce_chrome_noise_for_app(app_name: &str, text: &str) -> String {
     out
 }
 
-pub fn build_high_signal_text_for_app(app_name: &str, text: &str) -> HighSignalText {
+pub fn build_high_signal_text_for_app(app: AppIdentity<'_>, text: &str) -> HighSignalText {
     let mut stats = CaptureQualityStats::default();
     let mut out = String::new();
     let mut seen = HashSet::new();
@@ -483,11 +459,11 @@ pub fn build_high_signal_text_for_app(app_name: &str, text: &str) -> HighSignalT
             stats.low_conf_lines += 1;
         }
 
-        let quality = line_quality_score(app_name, &normalized, has_low_conf);
+        let quality = line_quality_score(app, &normalized, has_low_conf);
         score_sum += quality;
         scored_lines += 1;
 
-        if should_drop_line(app_name, &normalized) {
+        if should_drop_line(app, &normalized) {
             stats.dropped_noise_lines += 1;
             continue;
         }
@@ -518,13 +494,13 @@ pub fn build_high_signal_text_for_app(app_name: &str, text: &str) -> HighSignalT
             .map(|line| low_conf_payload(line).0)
             .collect::<Vec<_>>()
             .join("\n");
-        out = reduce_chrome_noise_for_app(app_name, &marker_free);
+        out = reduce_chrome_noise_for_app(app, &marker_free);
     }
 
     HighSignalText { text: out, stats }
 }
 
-fn line_quality_score(app_name: &str, line: &str, has_low_conf: bool) -> f32 {
+fn line_quality_score(app: AppIdentity<'_>, line: &str, has_low_conf: bool) -> f32 {
     let symbol = symbol_ratio(line).clamp(0.0, 1.0);
     let char_count = line.chars().count();
     let alpha = if char_count == 0 {
@@ -538,10 +514,10 @@ fn line_quality_score(app_name: &str, line: &str, has_low_conf: bool) -> f32 {
     if has_low_conf {
         score *= 0.78;
     }
-    if should_drop_line(app_name, line) {
+    if should_drop_line(app, line) {
         score *= 0.16;
     }
-    if !is_code_app(app_name) && looks_like_file_inventory(line) {
+    if !app.is_code() && looks_like_file_inventory(line) {
         score *= 0.25;
     }
 
@@ -550,7 +526,7 @@ fn line_quality_score(app_name: &str, line: &str, has_low_conf: bool) -> f32 {
 
 /// Backward-compatible wrapper when app context is unavailable.
 pub fn reduce_chrome_noise(text: &str) -> String {
-    reduce_chrome_noise_for_app("", text)
+    reduce_chrome_noise_for_app(AppIdentity::from_name(""), text)
 }
 
 // ── Semantic salience ranking ────────────────────────────────────────────────
@@ -602,7 +578,7 @@ fn split_block_into_sentences(block: &str) -> Vec<String> {
     out
 }
 
-fn span_score(app_name: &str, span: &str) -> f32 {
+fn span_score(app: AppIdentity<'_>, span: &str) -> f32 {
     let normalized = normalize_inline(span);
     if normalized.chars().count() < 10 {
         return 0.0;
@@ -615,11 +591,11 @@ fn span_score(app_name: &str, span: &str) -> f32 {
         if line.is_empty() {
             continue;
         }
-        line_sum += line_quality_score(app_name, &line, false);
+        line_sum += line_quality_score(app, &line, false);
         line_count += 1;
     }
     let avg_line = if line_count == 0 {
-        line_quality_score(app_name, &normalized, false)
+        line_quality_score(app, &normalized, false)
     } else {
         line_sum / line_count as f32
     };
@@ -695,7 +671,7 @@ fn span_score(app_name: &str, span: &str) -> f32 {
 /// Score and order content-bearing spans in `cleaned`. Spans are split on
 /// blank-line boundaries first, then on sentence terminators inside each
 /// block. The returned vector is sorted high-score first.
-pub fn rank_salient_spans(cleaned: &str, app_name: &str) -> Vec<SalientSpan> {
+pub fn rank_salient_spans(cleaned: &str, app: AppIdentity<'_>) -> Vec<SalientSpan> {
     if cleaned.trim().is_empty() {
         return Vec::new();
     }
@@ -709,7 +685,7 @@ pub fn rank_salient_spans(cleaned: &str, app_name: &str) -> Vec<SalientSpan> {
             if trimmed.is_empty() {
                 continue;
             }
-            let score = span_score(app_name, trimmed);
+            let score = span_score(app, trimmed);
             if score <= 0.0 {
                 continue;
             }
@@ -734,11 +710,15 @@ pub fn rank_salient_spans(cleaned: &str, app_name: &str) -> Vec<SalientSpan> {
 /// highest-ranked salient spans, capped at `max_chars`. Falls back to the raw
 /// head of `cleaned` only when no scoring spans are recovered (e.g. very short
 /// inputs).
-pub fn compress_to_salient_evidence(cleaned: &str, app_name: &str, max_chars: usize) -> String {
+pub fn compress_to_salient_evidence(
+    cleaned: &str,
+    app: AppIdentity<'_>,
+    max_chars: usize,
+) -> String {
     if max_chars == 0 || cleaned.trim().is_empty() {
         return String::new();
     }
-    let spans = rank_salient_spans(cleaned, app_name);
+    let spans = rank_salient_spans(cleaned, app);
     if spans.is_empty() {
         return cleaned.chars().take(max_chars).collect::<String>();
     }
@@ -763,8 +743,8 @@ pub fn compress_to_salient_evidence(cleaned: &str, app_name: &str, max_chars: us
 /// Ratio of top-k span score mass to total span score mass; 1.0 means a few
 /// dense spans carry the document's signal, near-0 means the signal is diffuse
 /// (typically dominated by chrome / OCR noise).
-pub fn salience_concentration(cleaned: &str, app_name: &str) -> f32 {
-    let spans = rank_salient_spans(cleaned, app_name);
+pub fn salience_concentration(cleaned: &str, app: AppIdentity<'_>) -> f32 {
+    let spans = rank_salient_spans(cleaned, app);
     if spans.is_empty() {
         return 0.0;
     }
@@ -784,7 +764,7 @@ mod tests {
     #[test]
     fn drops_tab_strip_middots() {
         let raw = "Project roadmap for Q2\nGmail · Calendar · Drive · GitHub\nActual paragraph content here";
-        let cleaned = reduce_chrome_noise_for_app("Safari", raw);
+        let cleaned = reduce_chrome_noise_for_app(AppIdentity::from_name("Safari"), raw);
         assert!(cleaned.contains("Project roadmap"));
         assert!(cleaned.contains("Actual paragraph"));
         assert!(!cleaned.contains("Gmail"));
@@ -794,7 +774,7 @@ mod tests {
     #[test]
     fn drops_generic_browser_tab_labels() {
         let raw = "New Tab\nHome\nTrending\nPreparing launch checklist for FNDR search";
-        let cleaned = reduce_chrome_noise_for_app("Chrome", raw);
+        let cleaned = reduce_chrome_noise_for_app(AppIdentity::from_name("Chrome"), raw);
         assert!(!cleaned.to_lowercase().contains("new tab"));
         assert!(!cleaned.to_lowercase().contains("home"));
         assert!(cleaned.contains("Preparing launch checklist"));
@@ -803,7 +783,7 @@ mod tests {
     #[test]
     fn preserves_url_lines_for_chunk_boundaries() {
         let raw = "Project planning notes for launch\nhttps://example.com/path?query=value";
-        let cleaned = reduce_chrome_noise_for_app("Chrome", raw);
+        let cleaned = reduce_chrome_noise_for_app(AppIdentity::from_name("Chrome"), raw);
         assert!(cleaned.contains("Project planning notes"));
         assert!(cleaned.contains("https://example.com/path?query=value"));
     }
@@ -811,7 +791,7 @@ mod tests {
     #[test]
     fn preserves_terminal_code_lines() {
         let raw = "cargo test --package fndr\nlet cards: Vec<MemoryCard> = synthesize();\nsrc/main.rs src/lib.rs src/search/mod.rs";
-        let cleaned = reduce_chrome_noise_for_app("Terminal", raw);
+        let cleaned = reduce_chrome_noise_for_app(AppIdentity::from_name("Terminal"), raw);
         assert!(cleaned.contains("cargo test"));
         assert!(cleaned.contains("Vec<MemoryCard>"));
         assert!(cleaned.contains("src/main.rs"));
@@ -820,7 +800,7 @@ mod tests {
     #[test]
     fn fallback_prefers_window_title() {
         let snippet = concise_fallback_snippet(
-            "VSCode",
+            AppIdentity::from_name("VSCode"),
             "fndr - download_model.sh",
             "src app.rs src/lib.rs src/main.rs src-tauri/src/graph/mod.rs",
         );
@@ -830,7 +810,7 @@ mod tests {
     #[test]
     fn fallback_skips_file_inventory_lines() {
         let snippet = concise_fallback_snippet(
-            "Chrome",
+            AppIdentity::from_name("Chrome"),
             "New Tab",
             "src/app.tsx src/lib.rs src/main.rs src-tauri/src/store/schema.rs\nFix memory summarization for OCR snippets",
         );
@@ -840,7 +820,7 @@ mod tests {
     #[test]
     fn fallback_combines_title_with_useful_lines() {
         let snippet = concise_fallback_snippet(
-            "Canva",
+            AppIdentity::from_name("Canva"),
             "Series A investor deck",
             "Resizing design for instagram post and story sizes\nUpdated CTA slide with pricing details",
         );
@@ -851,14 +831,14 @@ mod tests {
     #[test]
     fn marks_noisy_browser_payload_high_noise_score() {
         let raw = "New Tab\nHome\nTrending\nNotifications\nSuggested for you";
-        let score = estimate_noise_score("Chrome", raw);
+        let score = estimate_noise_score(AppIdentity::from_name("Chrome"), raw);
         assert!(score > 0.7);
     }
 
     #[test]
     fn high_signal_builder_strips_low_conf_markers_and_keeps_signal_lines() {
         let raw = "[LOW_CONF] New Tab\n[LOW_CONF] Home\nImplement robust OCR cleanup for capture pipeline\n[LOW_CONF] src/main.rs src/lib.rs src/api.ts";
-        let out = build_high_signal_text_for_app("Chrome", raw);
+        let out = build_high_signal_text_for_app(AppIdentity::from_name("Chrome"), raw);
         assert!(out.text.contains("Implement robust OCR cleanup"));
         assert!(!out.text.contains("[LOW_CONF]"));
         assert!(out.stats.total_lines >= 3);
@@ -868,7 +848,7 @@ mod tests {
     #[test]
     fn high_signal_builder_preserves_literal_low_conf_tokens_in_code() {
         let raw = "let marker = \"[LOW_CONF]\";\nPersist literal tokens in captured source code";
-        let out = build_high_signal_text_for_app("Terminal", raw);
+        let out = build_high_signal_text_for_app(AppIdentity::from_name("Terminal"), raw);
         assert!(out.text.contains("let marker = \"[LOW_CONF]\";"));
         assert_eq!(out.stats.low_conf_lines, 0);
     }
@@ -876,7 +856,7 @@ mod tests {
     #[test]
     fn high_signal_builder_scores_multilingual_text_by_characters() {
         let raw = "[LOW_CONF] 请审查产品部署计划和风险\nRelease checklist is ready for review";
-        let out = build_high_signal_text_for_app("Mail", raw);
+        let out = build_high_signal_text_for_app(AppIdentity::from_name("Mail"), raw);
         assert!(out.text.contains("请审查产品部署计划和风险"));
         assert!(out.text.contains("Release checklist"));
     }
@@ -884,7 +864,7 @@ mod tests {
     #[test]
     fn high_signal_builder_degrades_noisy_browser_frames() {
         let raw = "New Tab\nHome\nTrending\nSuggested for you\nNotifications\nExplore";
-        let out = build_high_signal_text_for_app("Google Chrome", raw);
+        let out = build_high_signal_text_for_app(AppIdentity::from_name("Google Chrome"), raw);
         assert!(out.stats.total_lines >= 5);
         assert_eq!(out.text.trim(), "");
         assert!(out.stats.kept_lines <= 1);
@@ -893,7 +873,7 @@ mod tests {
     #[test]
     fn high_signal_builder_preserves_code_lines_in_developer_apps() {
         let raw = "cargo check\nsrc-tauri/src/capture/mod.rs\nfn validate_structured_memory_extraction(...)";
-        let out = build_high_signal_text_for_app("Terminal", raw);
+        let out = build_high_signal_text_for_app(AppIdentity::from_name("Terminal"), raw);
         assert!(out.text.contains("cargo check"));
         assert!(out.text.contains("validate_structured_memory_extraction"));
         assert!(out.stats.kept_lines >= 2);
@@ -902,7 +882,7 @@ mod tests {
     #[test]
     fn high_signal_builder_keeps_email_semantics_without_navigation_noise() {
         let raw = "Inbox\nStarred\nSubject: Updated deployment plan\nPlease review the rollout risks before 4 PM.";
-        let out = build_high_signal_text_for_app("Mail", raw);
+        let out = build_high_signal_text_for_app(AppIdentity::from_name("Mail"), raw);
         assert!(out.text.contains("Subject: Updated deployment plan"));
         assert!(out.text.contains("Please review the rollout risks"));
         assert!(!out.text.to_lowercase().contains("starred"));
@@ -911,7 +891,7 @@ mod tests {
     #[test]
     fn rank_salient_spans_ranks_navigation_below_content() {
         let raw = "Home\n\nDiscover\n\nWe should consider refactoring the synthesis module because the durable context needs to survive across captures.\n\nNotifications";
-        let spans = rank_salient_spans(raw, "GenericApp");
+        let spans = rank_salient_spans(raw, AppIdentity::from_name("GenericApp"));
         assert!(!spans.is_empty(), "spans must not be empty");
         let top = &spans[0];
         assert!(
@@ -931,7 +911,7 @@ mod tests {
     #[test]
     fn compress_to_salient_evidence_respects_byte_budget() {
         let raw = "Reviewing the architecture document.\n\nWe decided to consolidate alias generation into a single helper to avoid drift between capture and rebuild paths.\n\nNext steps: validate retrieval scores on the regression fixtures and update the design doc.";
-        let compressed = compress_to_salient_evidence(raw, "Editor", 120);
+        let compressed = compress_to_salient_evidence(raw, AppIdentity::from_name("Editor"), 120);
         assert!(compressed.chars().count() <= 120);
         assert!(
             compressed.to_lowercase().contains("alias")
@@ -946,8 +926,8 @@ mod tests {
     fn salience_concentration_increases_with_signal_density() {
         let polluted = "Home\nDiscover\nTrending\nNew Tab\nNotifications";
         let dense = "We must finalize the durable memory context implementation before the next release. The reopen anchor needs to survive truncation. Decisions made today should be documented.";
-        let polluted_score = salience_concentration(polluted, "Chrome");
-        let dense_score = salience_concentration(dense, "Editor");
+        let polluted_score = salience_concentration(polluted, AppIdentity::from_name("Chrome"));
+        let dense_score = salience_concentration(dense, AppIdentity::from_name("Editor"));
         assert!(
             dense_score >= polluted_score,
             "dense content should have >= concentration than nav frames (dense={dense_score}, polluted={polluted_score})"

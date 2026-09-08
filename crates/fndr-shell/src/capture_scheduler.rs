@@ -326,6 +326,7 @@ mod tests {
             &self,
             _png: &[u8],
             _app_name: &str,
+            _bundle_id: Option<&str>,
             _min_chars: usize,
         ) -> Result<OcrOutput, PipelineError> {
             Ok(OcrOutput {

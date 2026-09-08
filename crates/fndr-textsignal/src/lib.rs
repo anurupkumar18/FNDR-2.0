@@ -1,7 +1,9 @@
 //! Perception heuristics ported from v1: OCR cleanup, line and span scoring, salience, noise estimation. Pure, no I/O.
 
+mod app;
 mod cleanup;
 
+pub use app::{AppClass, AppIdentity};
 pub use cleanup::{
     CaptureQualityStats, HighSignalText, SalientSpan, build_high_signal_text_for_app,
     compress_to_salient_evidence, concise_fallback_snippet, estimate_noise_score,

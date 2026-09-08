@@ -59,26 +59,72 @@ enum Browser {
     Unsupported,
 }
 
-fn browser_kind(app_name: &str, bundle_id: Option<&str>) -> Option<Browser> {
-    let app = app_name.to_ascii_lowercase();
-    let bundle = bundle_id.unwrap_or_default().to_ascii_lowercase();
-    let identifies = |needle: &str| app.contains(needle) || bundle.contains(needle);
+/// Bundle identifiers, matched in full then by family prefix (macOS treats
+/// bundle IDs as case-insensitive). `org.mozilla.` is listed entry by entry
+/// rather than as a prefix because it also covers Thunderbird, which is not a
+/// browser at all.
+const BROWSER_BUNDLE_EXACT: &[(&str, Browser)] = &[
+    ("com.apple.safari", Browser::Safari),
+    ("com.apple.safaritechnologypreview", Browser::Safari),
+    ("company.thebrowser.browser", Browser::Arc),
+    ("org.mozilla.firefox", Browser::Unsupported),
+    ("org.mozilla.firefoxdeveloperedition", Browser::Unsupported),
+    ("org.mozilla.nightly", Browser::Unsupported),
+];
 
-    if identifies("safari") {
-        Some(Browser::Safari)
-    } else if identifies("chrome") {
-        Some(Browser::Chrome)
-    } else if identifies("arc") {
-        Some(Browser::Arc)
-    } else if identifies("brave") {
-        Some(Browser::Brave)
-    } else if identifies("edge") {
-        Some(Browser::Edge)
-    } else if identifies("firefox") || identifies("opera") {
-        Some(Browser::Unsupported)
-    } else {
-        None
+const BROWSER_BUNDLE_PREFIX: &[(&str, Browser)] = &[
+    ("com.google.chrome", Browser::Chrome),
+    ("com.brave.browser", Browser::Brave),
+    ("com.microsoft.edgemac", Browser::Edge),
+    ("com.operasoftware.opera", Browser::Unsupported),
+];
+
+/// Whole-token name matches, used only when the bundle identifier is absent or
+/// unrecognized.
+const BROWSER_NAME_TOKENS: &[(&str, Browser)] = &[
+    ("safari", Browser::Safari),
+    ("chrome", Browser::Chrome),
+    ("arc", Browser::Arc),
+    ("brave", Browser::Brave),
+    ("edge", Browser::Edge),
+    ("firefox", Browser::Unsupported),
+    ("opera", Browser::Unsupported),
+];
+
+/// Identify the frontmost app as a browser whose AppleScript dictionary we can
+/// ask for the active tab.
+///
+/// Matching is deliberately exact rather than substring. The donor's
+/// `name.contains("arc")` also fired on "Search" and `name.contains("edge")`
+/// on "Knowledge Base", which is not merely a misclassification here: it would
+/// send `tell application "Safari"` while a different app is frontmost, and a
+/// backgrounded Safari answers with *its* tab title and URL. That metadata then
+/// reaches the privacy gate and storage as though it described the captured
+/// screen.
+fn browser_kind(app_name: &str, bundle_id: Option<&str>) -> Option<Browser> {
+    let bundle = bundle_id.unwrap_or_default().trim().to_ascii_lowercase();
+    if !bundle.is_empty() {
+        if let Some((_, browser)) = BROWSER_BUNDLE_EXACT.iter().find(|(id, _)| *id == bundle) {
+            return Some(*browser);
+        }
+        if let Some((_, browser)) = BROWSER_BUNDLE_PREFIX
+            .iter()
+            .find(|(prefix, _)| bundle.starts_with(prefix))
+        {
+            return Some(*browser);
+        }
     }
+
+    let lower = app_name.to_lowercase();
+    for token in lower.split(|ch: char| !ch.is_alphanumeric()) {
+        if token.is_empty() {
+            continue;
+        }
+        if let Some((_, browser)) = BROWSER_NAME_TOKENS.iter().find(|(name, _)| *name == token) {
+            return Some(*browser);
+        }
+    }
+    None
 }
 
 fn browser_metadata(browser: Browser) -> Result<(String, Option<String>), PipelineError> {
@@ -203,6 +249,44 @@ mod tests {
             Some(Browser::Edge)
         );
         assert_eq!(browser_kind("Finder", Some("com.apple.finder")), None);
+    }
+
+    #[test]
+    fn substring_lookalikes_never_borrow_another_browsers_tab_metadata() {
+        // "Search" contains "arc"; "Knowledge Base" contains "edge". Treating
+        // either as a browser asks a backgrounded browser for its front tab
+        // and stores that URL against this app's screenshot.
+        assert_eq!(browser_kind("Search", None), None);
+        assert_eq!(browser_kind("Knowledge Base", None), None);
+        assert_eq!(browser_kind("Barcode Scanner", None), None);
+    }
+
+    #[test]
+    fn a_bundle_identifier_outranks_a_renamed_or_localized_name() {
+        assert_eq!(
+            browser_kind("Navegador", Some("com.google.Chrome")),
+            Some(Browser::Chrome)
+        );
+        assert_eq!(
+            browser_kind("Arc", Some("company.thebrowser.Browser")),
+            Some(Browser::Arc)
+        );
+        assert_eq!(
+            browser_kind("Chrome Beta", Some("com.google.Chrome.beta")),
+            Some(Browser::Chrome)
+        );
+    }
+
+    #[test]
+    fn thunderbird_is_not_a_mozilla_browser() {
+        assert_eq!(
+            browser_kind("Thunderbird", Some("org.mozilla.thunderbird")),
+            None
+        );
+        assert_eq!(
+            browser_kind("Firefox", Some("org.mozilla.firefox")),
+            Some(Browser::Unsupported)
+        );
     }
 
     #[test]
