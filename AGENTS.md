@@ -491,6 +491,16 @@ prefix) and treat the localized name as a whole-token fallback; never
 substring-match an app name. Mozilla is the worked example for why family
 prefixes need care: `org.mozilla.` covers Thunderbird too.
 
+## 2026-09-08 · `make test` fails on formatting before it runs a single test
+Cost: one full `make test` cycle on the textsignal Unicode-budget slice.
+Root cause: edits applied by script (python/sed heredocs) rather than an
+editor are not formatted; hand-wrapped chained iterators that rustfmt would
+join onto one line fail `cargo fmt --check`, which `make test` runs first, so
+the gate dies before any test result exists.
+Rule: run `cargo fmt --all` immediately after any scripted Rust edit and
+before `make test`; a red gate whose output is only `Diff in ...` is a
+formatting failure, not a test failure.
+
 <!-- Inlined from .claude/skills/fndr-feature-dev/SKILL.md -->
 
 

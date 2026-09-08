@@ -1,7 +1,8 @@
 // Ported from FNDR v1 src-tauri/src/capture/text_cleanup.rs (reference/v1) per ADR-005.
 // Heuristic constants and their tuning comments move exactly (they encode the why).
 // The v2 wiring corrects two donor defects: only an engine-owned line prefix is
-// a LOW_CONF marker, and Unicode quality ratios count characters, not UTF-8 bytes.
+// a LOW_CONF marker, and Unicode line budgets and quality ratios count characters,
+// not UTF-8 bytes (a byte budget charges a CJK line ~3x for the same information).
 //! Drop obvious browser chrome from OCR text before embeddings and storage.
 //!
 //! Vision still sees the full screenshot; we only trim lines that usually come from
@@ -53,12 +54,12 @@ fn looks_like_tab_strip_line(line: &str) -> bool {
     if dots < 2 {
         return false;
     }
-    let segments: Vec<usize> = line.split('·').map(|s| s.trim().len()).collect();
+    let segments: Vec<usize> = line.split('·').map(|s| s.trim().chars().count()).collect();
     if segments.is_empty() {
         return false;
     }
     let max_seg = *segments.iter().max().unwrap_or(&0);
-    max_seg <= 42 && line.len() <= 220
+    max_seg <= 42 && line.chars().count() <= 220
 }
 
 /// Same idea for toolbars that OCR as "A | B | C" with short labels.
@@ -67,17 +68,17 @@ fn looks_like_pipe_tab_row(line: &str) -> bool {
     if pipes < 2 {
         return false;
     }
-    let segments: Vec<usize> = line.split('|').map(|s| s.trim().len()).collect();
+    let segments: Vec<usize> = line.split('|').map(|s| s.trim().chars().count()).collect();
     if segments.len() < 3 {
         return false;
     }
     let max_seg = *segments.iter().max().unwrap_or(&0);
-    max_seg <= 36 && line.len() <= 220
+    max_seg <= 36 && line.chars().count() <= 220
 }
 
 /// Very short lines that are almost always window or browser chrome (conservative).
 fn is_compact_chrome_caption(line: &str) -> bool {
-    if line.len() > 64 {
+    if line.chars().count() > 64 {
         return false;
     }
     let lower = line.to_lowercase();
@@ -87,7 +88,7 @@ fn is_compact_chrome_caption(line: &str) -> bool {
     }
     lower.contains("back")
         && lower.contains("forward")
-        && lower.len() < 42
+        && lower.chars().count() < 42
         && (lower.contains("reload") || lower.contains("refresh"))
 }
 
@@ -141,7 +142,7 @@ fn looks_like_json_inventory(line: &str) -> bool {
     if (trimmed.starts_with('{') && trimmed.ends_with('}'))
         || (trimmed.starts_with('[') && trimmed.ends_with(']'))
     {
-        return trimmed.len() > 50;
+        return trimmed.chars().count() > 50;
     }
 
     lower.contains("\"files\"")
@@ -161,6 +162,13 @@ fn looks_like_notification_fragment(line: &str) -> bool {
 }
 
 fn looks_like_feed_fragment(line: &str) -> bool {
+    // Deliberately still a BYTE length. Unlike the other budgets in this file this
+    // one does not stand alone: it only bounds the `words <= 2` test below, and a
+    // whitespace word count is meaningless for scripts that do not space their
+    // words, where a whole CJK paragraph counts as one "word". Byte length is the
+    // only thing keeping this Latin-shaped rule off longer CJK content lines;
+    // widening it to characters would drop three times as much of them. Making the
+    // rule script-neutral needs a word-segmentation fix, not a unit change.
     if line.len() > 90 {
         return false;
     }
@@ -314,10 +322,11 @@ fn should_drop_line(app: AppIdentity<'_>, line: &str) -> bool {
 
 fn is_useful_snippet_line(app: AppIdentity<'_>, line: &str) -> bool {
     let normalized = normalize_inline(line);
-    if normalized.len() < MIN_LINE_LEN {
+    let char_count = normalized.chars().count();
+    if char_count < MIN_LINE_LEN {
         return false;
     }
-    if normalized.len() > 240 {
+    if char_count > 240 {
         return false;
     }
     if should_drop_line(app, &normalized) {
@@ -339,7 +348,7 @@ pub fn estimate_noise_score(app: AppIdentity<'_>, text: &str) -> f32 {
             continue;
         }
         total += 1;
-        if should_drop_line(app, &line) || line.len() < MIN_LINE_LEN {
+        if should_drop_line(app, &line) || line.chars().count() < MIN_LINE_LEN {
             noisy_weight += 1.0;
             continue;
         }
@@ -416,12 +425,13 @@ pub fn concise_fallback_snippet(app: AppIdentity<'_>, window_title: &str, text: 
 
 /// Remove noisy lines; keep structure and duplicates handled upstream in OCR when possible.
 pub fn reduce_chrome_noise_for_app(app: AppIdentity<'_>, text: &str) -> String {
+    // Byte capacity hint for the output buffer, not a text budget: bytes are right here.
     let mut out = String::with_capacity(text.len());
     let mut seen = HashSet::new();
 
     for line in text.lines() {
         let trimmed = normalize_inline(line.trim());
-        if trimmed.len() < MIN_LINE_LEN {
+        if trimmed.chars().count() < MIN_LINE_LEN {
             continue;
         }
         if should_drop_line(app, &trimmed) {
@@ -886,6 +896,63 @@ mod tests {
         assert!(out.text.contains("Subject: Updated deployment plan"));
         assert!(out.text.contains("Please review the rollout risks"));
         assert!(!out.text.to_lowercase().contains("starred"));
+    }
+
+    #[test]
+    fn snippet_path_keeps_long_cjk_line_like_its_latin_equivalent() {
+        // 90 characters / 270 UTF-8 bytes: admitted by a character budget of 240,
+        // rejected by a byte budget of 240 purely because the script is CJK.
+        let cjk = "我们决定在下个版本发布之前完成持久化记忆上下文的实现工作并且要求检索评分在回归测试集上保持稳定同时更新架构设计文档和捕获管线的详细说明以便团队成员可以在下周的评审会议上讨论后续步骤";
+        let latin = "We decided to finish the durable memory context implementation before the next release and to keep retrieval scores stable on the regression fixtures while updating the design doc";
+        assert_eq!(cjk.chars().count(), 90);
+        assert!(cjk.len() > 240, "fixture must exceed the byte budget");
+        assert!(latin.chars().count() < 240 && latin.len() < 240);
+
+        let app = AppIdentity::from_name("Notes");
+        let cjk_snippet = concise_fallback_snippet(app, "", cjk);
+        let latin_snippet = concise_fallback_snippet(app, "", latin);
+        assert!(
+            latin_snippet.starts_with("We decided to finish"),
+            "latin control must survive, got {latin_snippet:?}"
+        );
+        assert!(
+            cjk_snippet.starts_with("我们决定在下个版本发布之前"),
+            "equivalent CJK line must survive the same path, got {cjk_snippet:?}"
+        );
+    }
+
+    #[test]
+    fn snippet_path_keeps_long_cyrillic_line_like_its_latin_equivalent() {
+        // 161 characters / 303 UTF-8 bytes: same defect, two bytes per character.
+        let cyrillic = "Мы решили завершить реализацию устойчивого контекста памяти до следующего релиза и проверить оценки поиска на регрессионных фикстурах перед обновлением документа";
+        let latin = "We decided to finish the durable memory context before the next release and to verify retrieval scores on the regression fixtures before updating the design document";
+        assert!(cyrillic.chars().count() < 240 && cyrillic.len() > 240);
+
+        let app = AppIdentity::from_name("Notes");
+        let cyrillic_snippet = concise_fallback_snippet(app, "", cyrillic);
+        let latin_snippet = concise_fallback_snippet(app, "", latin);
+        assert!(
+            latin_snippet.starts_with("We decided to finish"),
+            "latin control must survive, got {latin_snippet:?}"
+        );
+        assert!(
+            cyrillic_snippet.starts_with("Мы решили завершить"),
+            "equivalent Cyrillic line must survive the same path, got {cyrillic_snippet:?}"
+        );
+    }
+
+    #[test]
+    fn chrome_noise_reduction_drops_short_cjk_lines_by_character_count() {
+        // "通知中心" is four characters (twelve bytes): shorter than MIN_LINE_LEN
+        // characters, but a byte budget waves it through while dropping the equally
+        // short English "Home".
+        let raw = "通知中心\n我们需要在发布之前完成检索质量的回归测试并记录结论";
+        let cleaned = reduce_chrome_noise_for_app(AppIdentity::from_name("Notes"), raw);
+        assert!(cleaned.contains("我们需要在发布之前完成检索质量的回归测试并记录结论"));
+        assert!(
+            !cleaned.contains("通知中心"),
+            "sub-minimum CJK line must be dropped like its Latin equivalent, got {cleaned:?}"
+        );
     }
 
     #[test]
