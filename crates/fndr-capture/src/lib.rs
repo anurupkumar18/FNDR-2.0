@@ -8,6 +8,7 @@
 mod admission;
 mod dedup;
 mod foreground;
+mod health;
 mod pipeline;
 mod sampling;
 mod source;
@@ -15,6 +16,7 @@ mod source;
 pub use admission::{CaptureSurfacePolicy, classify_capture_surface_policy};
 pub use dedup::{PerceptualDeduper, PerceptualSignature, SemanticDedupWindow, semantic_signature};
 pub use foreground::MacOSForegroundContextSource;
+pub use health::{CaptureHealthReport, CleanupQuality, CleanupSignal, QualityRate, RedactionQuality};
 pub use pipeline::{
     CaptureContext, CaptureContextSource, CaptureCounters, CapturePipeline, CapturePipelineConfig,
     CaptureSink, CaptureStage, CaptureTickOutcome, GateDecision, OcrOutput, OcrRecognizer,
