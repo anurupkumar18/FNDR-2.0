@@ -91,6 +91,41 @@ pub enum GateDecision {
     Skip(SkipReason),
 }
 
+/// How much evidence the OCR and cleanup stages discarded from one frame.
+///
+/// This is the content-free half of the OCR boundary's result: line counts
+/// only, never a line, an app name, a URL, or a window title. It exists so a
+/// capture-health caller can answer "how much of this capture was thrown
+/// away, and by which stage" without ever being handed the captured text.
+/// Before it existed, both aggregates were computed at the Vision boundary
+/// and immediately dropped, which is exactly the silent-degradation shape
+/// invariant 4 exists to prevent.
+///
+/// `recognized` counts what the recognizer saw; `cleanup_*` counts what the
+/// app-aware cleanup pass then did to the lines the recognizer kept. The two
+/// stages are deliberately not summed into one number: an operator needs to
+/// know whether a thin capture came from a bad screenshot or an aggressive
+/// cleanup rule.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct OcrQualitySample {
+    /// Lines the recognizer produced before any filtering.
+    pub recognized_lines: u32,
+    /// Lines the recognizer kept after its own confidence filter.
+    pub recognized_lines_kept: u32,
+    /// Lines the recognizer dropped for low confidence.
+    pub recognized_lines_dropped: u32,
+    /// Kept lines the recognizer marked as low confidence.
+    pub low_confidence_lines: u32,
+    /// Lines the app-aware cleanup pass examined.
+    pub cleanup_lines: u32,
+    /// Lines cleanup kept as high-signal evidence.
+    pub cleanup_lines_kept: u32,
+    /// Lines cleanup dropped as chrome/noise (tab rows, menu bars).
+    pub cleanup_lines_dropped_noise: u32,
+    /// Lines cleanup dropped for scoring below its signal floor.
+    pub cleanup_lines_dropped_low_signal: u32,
+}
+
 /// Normalized OCR output used by the scheduler's low-signal and semantic
 /// stages. The Vision adapter converts its richer result into this value.
 #[derive(Debug, Clone, PartialEq)]
@@ -102,6 +137,9 @@ pub struct OcrOutput {
     /// Keeping that rule at the Vision boundary avoids a second, drift-prone
     /// interpretation of OCR quality in the scheduler.
     pub low_signal: bool,
+    /// Content-free counts describing what the OCR and cleanup stages
+    /// discarded. Carried, not consumed: the pipeline never routes on it.
+    pub quality: OcrQualitySample,
 }
 
 /// The OCR boundary; implementations must return cleaned, not raw, text.
@@ -183,6 +221,82 @@ pub struct CaptureCounters {
     pub stored: u64,
     pub url_only_stored: u64,
     pub skipped: HashMap<SkipReason, u64>,
+    /// Lifetime totals of what OCR and cleanup discarded, so capture health
+    /// can report degradation instead of only counting terminal outcomes.
+    pub quality: CaptureQualityTotals,
+}
+
+/// Scheduler-lifetime sums of `OcrQualitySample`, plus the ratios a health
+/// surface actually reads. Content-free by construction: it is built only
+/// from counts, and there is no field a line of captured text could reach.
+///
+/// Samples accumulate for every tick whose OCR stage returned, including
+/// ticks later skipped as low-signal or semantically duplicate. That is
+/// deliberate: the discard a health surface most needs to explain is exactly
+/// the one that made a capture too thin to store.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct CaptureQualityTotals {
+    /// Ticks that reached and completed the OCR boundary.
+    pub samples: u64,
+    pub recognized_lines: u64,
+    pub recognized_lines_kept: u64,
+    pub recognized_lines_dropped: u64,
+    pub low_confidence_lines: u64,
+    pub cleanup_lines: u64,
+    pub cleanup_lines_kept: u64,
+    pub cleanup_lines_dropped_noise: u64,
+    pub cleanup_lines_dropped_low_signal: u64,
+}
+
+impl CaptureQualityTotals {
+    fn accumulate(&mut self, sample: &OcrQualitySample) {
+        self.samples = self.samples.saturating_add(1);
+        self.recognized_lines = self
+            .recognized_lines
+            .saturating_add(u64::from(sample.recognized_lines));
+        self.recognized_lines_kept = self
+            .recognized_lines_kept
+            .saturating_add(u64::from(sample.recognized_lines_kept));
+        self.recognized_lines_dropped = self
+            .recognized_lines_dropped
+            .saturating_add(u64::from(sample.recognized_lines_dropped));
+        self.low_confidence_lines = self
+            .low_confidence_lines
+            .saturating_add(u64::from(sample.low_confidence_lines));
+        self.cleanup_lines = self
+            .cleanup_lines
+            .saturating_add(u64::from(sample.cleanup_lines));
+        self.cleanup_lines_kept = self
+            .cleanup_lines_kept
+            .saturating_add(u64::from(sample.cleanup_lines_kept));
+        self.cleanup_lines_dropped_noise = self
+            .cleanup_lines_dropped_noise
+            .saturating_add(u64::from(sample.cleanup_lines_dropped_noise));
+        self.cleanup_lines_dropped_low_signal = self
+            .cleanup_lines_dropped_low_signal
+            .saturating_add(u64::from(sample.cleanup_lines_dropped_low_signal));
+    }
+
+    /// Fraction of recognizer lines dropped for low confidence, or `None`
+    /// when no line has been observed yet. `None` rather than `0.0` because
+    /// "nothing captured" and "nothing discarded" are different health
+    /// answers, and collapsing them is the silent-degradation shape.
+    pub fn recognized_discard_ratio(&self) -> Option<f64> {
+        ratio(self.recognized_lines_dropped, self.recognized_lines)
+    }
+
+    /// Fraction of cleanup-examined lines dropped by either cleanup rule.
+    pub fn cleanup_discard_ratio(&self) -> Option<f64> {
+        ratio(
+            self.cleanup_lines_dropped_noise
+                .saturating_add(self.cleanup_lines_dropped_low_signal),
+            self.cleanup_lines,
+        )
+    }
+}
+
+fn ratio(part: u64, whole: u64) -> Option<f64> {
+    (whole > 0).then(|| part as f64 / whole as f64)
 }
 
 impl CaptureCounters {
@@ -319,6 +433,10 @@ where
             Ok(ocr) => ocr,
             Err(error) => return failed(SkipReason::OcrFailed, error),
         };
+        // Recorded before the low-signal branch on purpose: a capture that is
+        // discarded for being thin is precisely the one whose discard counts
+        // explain why.
+        self.counters.quality.accumulate(&ocr.quality);
         if ocr.low_signal {
             return CaptureTickOutcome::Skipped(SkipReason::LowSignal);
         }
@@ -412,6 +530,19 @@ mod tests {
         }
     }
 
+    /// One frame's worth of discard counts, with every field distinct so a
+    /// test cannot pass by summing the wrong pair.
+    const SAMPLE: OcrQualitySample = OcrQualitySample {
+        recognized_lines: 20,
+        recognized_lines_kept: 17,
+        recognized_lines_dropped: 3,
+        low_confidence_lines: 4,
+        cleanup_lines: 17,
+        cleanup_lines_kept: 9,
+        cleanup_lines_dropped_noise: 5,
+        cleanup_lines_dropped_low_signal: 3,
+    };
+
     struct Ocr(OcrOutput);
 
     impl OcrRecognizer for Ocr {
@@ -446,6 +577,7 @@ mod tests {
                 confidence: 0.9,
                 block_count: 3,
                 low_signal: false,
+                quality: OcrQualitySample::default(),
             })
         }
     }
@@ -519,6 +651,7 @@ mod tests {
                 confidence: 0.9,
                 block_count: 3,
                 low_signal: false,
+                quality: SAMPLE,
             }),
             sink,
             CapturePipelineConfig::default(),
@@ -592,6 +725,7 @@ mod tests {
                 confidence: 0.0,
                 block_count: 0,
                 low_signal: true,
+                quality: OcrQualitySample::default(),
             }),
             Sink::default(),
             CapturePipelineConfig::default(),
@@ -630,6 +764,7 @@ mod tests {
                 confidence: 0.9,
                 block_count: 2,
                 low_signal: true,
+                quality: SAMPLE,
             }),
             Sink::default(),
             CapturePipelineConfig::default(),
@@ -679,6 +814,109 @@ mod tests {
             CaptureTickOutcome::Skipped(SkipReason::FinalPrivacy)
         );
         assert_eq!(pipeline.sink().captures, 1);
+    }
+
+    #[test]
+    fn quality_totals_accumulate_across_ticks_and_expose_discard_ratios() {
+        let mut pipeline = pipeline(
+            context("Finder", "Project", None),
+            vec![
+                frame(Some(signature([0, 0, 0])), 1_000),
+                frame(Some(signature([255, 0, 0])), 100_000),
+            ],
+            GateDecision::Allow,
+            Sink::default(),
+        );
+
+        assert_eq!(pipeline.run_tick(), CaptureTickOutcome::Stored);
+        let after_one = pipeline.counters().quality;
+        assert_eq!(after_one.samples, 1);
+        assert_eq!(after_one.recognized_lines, 20);
+        assert_eq!(after_one.cleanup_lines_dropped_noise, 5);
+
+        // Second tick is far outside the semantic window, so it stores too.
+        assert_eq!(pipeline.run_tick(), CaptureTickOutcome::Stored);
+        let totals = pipeline.counters().quality;
+        assert_eq!(totals.samples, 2);
+        assert_eq!(totals.recognized_lines, 40);
+        assert_eq!(totals.recognized_lines_dropped, 6);
+        assert_eq!(totals.low_confidence_lines, 8);
+        assert_eq!(totals.cleanup_lines, 34);
+        assert_eq!(totals.cleanup_lines_kept, 18);
+        assert_eq!(totals.cleanup_lines_dropped_noise, 10);
+        assert_eq!(totals.cleanup_lines_dropped_low_signal, 6);
+
+        // 6/40 recognizer lines dropped; (10+6)/34 cleanup lines dropped.
+        assert_eq!(totals.recognized_discard_ratio(), Some(6.0 / 40.0));
+        assert_eq!(totals.cleanup_discard_ratio(), Some(16.0 / 34.0));
+    }
+
+    #[test]
+    fn quality_ratios_are_absent_rather_than_zero_before_any_line_is_seen() {
+        // "Nothing captured" must not read as "nothing discarded"; that
+        // collapse is exactly the silent-degradation shape (invariant 4).
+        let totals = CaptureQualityTotals::default();
+        assert_eq!(totals.recognized_discard_ratio(), None);
+        assert_eq!(totals.cleanup_discard_ratio(), None);
+    }
+
+    #[test]
+    fn a_low_signal_discard_still_reports_the_counts_that_explain_it() {
+        let mut pipeline = CapturePipeline::new(
+            Context(context("Finder", "Project", None)),
+            Frames(RefCell::new(
+                vec![frame(Some(signature([0, 0, 0])), 1_000)].into(),
+            )),
+            Gate(GateDecision::Allow),
+            Ocr(OcrOutput {
+                text: "short".to_owned(),
+                confidence: 0.9,
+                block_count: 2,
+                low_signal: true,
+                quality: SAMPLE,
+            }),
+            Sink::default(),
+            CapturePipelineConfig::default(),
+        );
+
+        assert_eq!(
+            pipeline.run_tick(),
+            CaptureTickOutcome::Skipped(SkipReason::LowSignal)
+        );
+        assert_eq!(pipeline.counters().quality.samples, 1);
+        assert_eq!(pipeline.counters().quality.cleanup_lines_dropped_noise, 5);
+    }
+
+    #[test]
+    fn a_tick_that_never_reaches_ocr_records_no_quality_sample() {
+        let mut pipeline = pipeline(
+            context("1Password", "Vault", None),
+            vec![frame(Some(signature([0, 0, 0])), 1_000)],
+            GateDecision::Skip(SkipReason::PreCapturePrivacy),
+            Sink::default(),
+        );
+
+        assert_eq!(
+            pipeline.run_tick(),
+            CaptureTickOutcome::Skipped(SkipReason::PreCapturePrivacy)
+        );
+        assert_eq!(pipeline.counters().quality, CaptureQualityTotals::default());
+    }
+
+    #[test]
+    fn quality_totals_carry_counts_only_and_never_captured_text() {
+        let mut pipeline = pipeline(
+            context("Finder", "Secret Project Plan", None),
+            vec![frame(Some(signature([0, 0, 0])), 1_000)],
+            GateDecision::Allow,
+            Sink::default(),
+        );
+
+        assert_eq!(pipeline.run_tick(), CaptureTickOutcome::Stored);
+        let rendered = format!("{:?}", pipeline.counters().quality);
+        assert!(!rendered.contains("meaningful captured text"));
+        assert!(!rendered.contains("Secret Project Plan"));
+        assert!(!rendered.contains("Finder"));
     }
 
     #[test]

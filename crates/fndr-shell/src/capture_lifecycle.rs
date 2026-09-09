@@ -10,10 +10,10 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use fndr_capture::{CaptureTickOutcome, SkipReason};
+use fndr_capture::{CaptureQualityTotals, CaptureTickOutcome, SkipReason};
 use fndr_types::{
-    CaptureFlushState, CaptureRuntimeState, CaptureRuntimeStatus, CaptureTickState,
-    CaptureTickStatus,
+    CaptureFlushState, CaptureQualityStatus, CaptureRuntimeState, CaptureRuntimeStatus,
+    CaptureTickState, CaptureTickStatus,
 };
 
 use crate::capture_scheduler::FlushTickOutcome;
@@ -99,6 +99,7 @@ impl CaptureLifecycle {
                         state: CaptureRuntimeState::Blocked,
                         observed_at_ms: now_ms(),
                         tick: None,
+                        quality: None,
                         shutdown_flushed_chunks: None,
                         reason: Some(start_error_reason(&error).to_owned()),
                     },
@@ -168,6 +169,9 @@ impl CaptureLifecycle {
             },
             observed_at_ms: now_ms(),
             tick: previous.tick,
+            // Pausing changes lifecycle, not evidence: the totals the owner
+            // was already shown stay true and must not blank out.
+            quality: previous.quality,
             shutdown_flushed_chunks: None,
             reason: paused.then(|| "user_paused".into()),
         };
@@ -205,6 +209,7 @@ impl CaptureLifecycle {
                 state: CaptureRuntimeState::Stopped,
                 observed_at_ms: now_ms(),
                 tick: None,
+                quality: None,
                 shutdown_flushed_chunks: Some(
                     u32::try_from(report.shutdown_flushed_chunks).unwrap_or(u32::MAX),
                 ),
@@ -231,6 +236,7 @@ fn status(state: CaptureRuntimeState) -> CaptureRuntimeStatus {
         state,
         observed_at_ms: now_ms(),
         tick: None,
+        quality: None,
         shutdown_flushed_chunks: None,
         reason: None,
     }
@@ -255,9 +261,34 @@ fn worker_event_status(event: CaptureWorkerEvent, is_paused: bool) -> CaptureRun
             flush,
             reason,
         }),
+        quality: Some(quality_status(&event.outcome.quality)),
         shutdown_flushed_chunks: None,
         reason: is_paused.then(|| "user_paused".into()),
     }
+}
+
+/// Narrow the engine's lifetime totals onto the IPC type. Counts saturate at
+/// `u32::MAX` per ADR-001's no-64-bit-integer convention; a pinned health
+/// counter is preferable to a wrapped one. Nothing but numbers crosses.
+fn quality_status(totals: &CaptureQualityTotals) -> CaptureQualityStatus {
+    CaptureQualityStatus {
+        samples: narrow(totals.samples),
+        recognized_lines: narrow(totals.recognized_lines),
+        recognized_lines_dropped: narrow(totals.recognized_lines_dropped),
+        low_confidence_lines: narrow(totals.low_confidence_lines),
+        cleanup_lines: narrow(totals.cleanup_lines),
+        cleanup_lines_dropped: narrow(
+            totals
+                .cleanup_lines_dropped_noise
+                .saturating_add(totals.cleanup_lines_dropped_low_signal),
+        ),
+        recognized_discard_ratio: totals.recognized_discard_ratio(),
+        cleanup_discard_ratio: totals.cleanup_discard_ratio(),
+    }
+}
+
+fn narrow(value: u64) -> u32 {
+    u32::try_from(value).unwrap_or(u32::MAX)
 }
 
 fn capture_status(outcome: &CaptureTickOutcome) -> (CaptureTickState, Option<String>) {
@@ -339,6 +370,7 @@ mod tests {
                     error: PipelineError::new(CaptureStage::Capture, "private window title"),
                 },
                 flush: FlushTickOutcome::Failed("private chunk text".into()),
+                quality: CaptureQualityTotals::default(),
             },
         };
 
@@ -360,6 +392,85 @@ mod tests {
     }
 
     #[test]
+    fn lifetime_discard_totals_reach_the_status_payload_as_counts_and_ratios() {
+        // The point of the slice: an operator can now see that cleanup threw
+        // away most of a capture, which was previously computed and dropped.
+        let event = CaptureWorkerEvent {
+            observed_at_ms: 42,
+            outcome: SchedulerTickOutcome {
+                capture: CaptureTickOutcome::Stored,
+                flush: FlushTickOutcome::NotDue,
+                quality: CaptureQualityTotals {
+                    samples: 4,
+                    recognized_lines: 40,
+                    recognized_lines_kept: 30,
+                    recognized_lines_dropped: 10,
+                    low_confidence_lines: 6,
+                    cleanup_lines: 30,
+                    cleanup_lines_kept: 12,
+                    cleanup_lines_dropped_noise: 13,
+                    cleanup_lines_dropped_low_signal: 5,
+                },
+            },
+        };
+
+        let status = worker_event_status(event, false);
+
+        assert_eq!(
+            status.quality,
+            Some(CaptureQualityStatus {
+                samples: 4,
+                recognized_lines: 40,
+                recognized_lines_dropped: 10,
+                low_confidence_lines: 6,
+                cleanup_lines: 30,
+                cleanup_lines_dropped: 18,
+                recognized_discard_ratio: Some(0.25),
+                cleanup_discard_ratio: Some(0.6),
+            })
+        );
+    }
+
+    #[test]
+    fn quality_fields_are_content_free_and_absent_before_any_line_is_seen() {
+        // The status payload's content-free contract now covers the quality
+        // aggregate too: it is built only from counts, and an empty lifetime
+        // reports `null` ratios rather than a misleading zero.
+        let event = CaptureWorkerEvent {
+            observed_at_ms: 42,
+            outcome: SchedulerTickOutcome {
+                capture: CaptureTickOutcome::Skipped(SkipReason::LowSignal),
+                flush: FlushTickOutcome::NotDue,
+                quality: CaptureQualityTotals::default(),
+            },
+        };
+
+        let status = worker_event_status(event, false);
+        let quality = status.quality.expect("a tick always reports its totals");
+        assert_eq!(quality.samples, 0);
+        assert_eq!(quality.recognized_discard_ratio, None);
+        assert_eq!(quality.cleanup_discard_ratio, None);
+
+        // The aggregate is a fixed set of numeric fields. Rendering it and
+        // asserting nothing non-numeric survives keeps a future field that
+        // carries text (a "worst app", a sample line) from slipping in
+        // without a reviewer noticing.
+        let rendered = format!("{quality:?}");
+        assert!(
+            rendered
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || " ,:{}_().".contains(ch)),
+            "capture quality status rendered non-numeric content: {rendered}"
+        );
+        for banned in ["text", "app", "title", "url", "bundle"] {
+            assert!(
+                !rendered.to_ascii_lowercase().contains(banned),
+                "capture quality status gained a content-bearing field `{banned}`: {rendered}"
+            );
+        }
+    }
+
+    #[test]
     fn skip_and_flush_states_remain_distinct() {
         let event = CaptureWorkerEvent {
             observed_at_ms: 42,
@@ -369,6 +480,7 @@ mod tests {
                     written: 2,
                     batch_was_full: false,
                 }),
+                quality: CaptureQualityTotals::default(),
             },
         };
 
@@ -394,6 +506,7 @@ mod tests {
                     error: PipelineError::new(CaptureStage::Capture, "TCC details"),
                 },
                 flush: FlushTickOutcome::NotDue,
+                quality: CaptureQualityTotals::default(),
             },
         };
 
@@ -412,6 +525,7 @@ mod tests {
             outcome: SchedulerTickOutcome {
                 capture: CaptureTickOutcome::Skipped(SkipReason::PrivateBrowsing),
                 flush: FlushTickOutcome::NotDue,
+                quality: CaptureQualityTotals::default(),
             },
         };
 

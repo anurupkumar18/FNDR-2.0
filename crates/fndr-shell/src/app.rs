@@ -246,6 +246,7 @@ impl Default for ShellCaptureState {
                 state: CaptureRuntimeState::Stopped,
                 observed_at_ms: 0.0,
                 tick: None,
+                quality: None,
                 shutdown_flushed_chunks: None,
                 reason: Some("not_started".into()),
             })),

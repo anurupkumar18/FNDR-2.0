@@ -6,8 +6,8 @@
 //! lifecycle and shutdown flush can be tested as one slice.
 
 use fndr_capture::{
-    CaptureContext, CaptureSink, CaptureStage, Frame, GateDecision, OcrOutput, OcrRecognizer,
-    PersistenceOutcome, PipelineError, PreCaptureGate, SkipReason,
+    CaptureContext, CaptureSink, CaptureStage, Frame, GateDecision, OcrOutput, OcrQualitySample,
+    OcrRecognizer, PersistenceOutcome, PipelineError, PreCaptureGate, SkipReason,
 };
 use fndr_memory::{CaptureForPersistence, PersistCaptureOutcome, persist_capture};
 use fndr_ocr::{OcrEngine, RecognizedText};
@@ -90,6 +90,11 @@ fn normalize_recognized_text(
     min_chars: usize,
 ) -> OcrOutput {
     let high_signal = build_high_signal_text_for_app(app, &recognized.text);
+    // Both stages already compute how much they discarded. Joining the two
+    // aggregates here is the only place that knows both; before this, each
+    // was computed and dropped, leaving the product unable to say why a
+    // capture came out thin.
+    let quality = quality_sample(&recognized.ocr_stats, &high_signal.stats);
     recognized.text = high_signal.text;
 
     OcrOutput {
@@ -97,7 +102,33 @@ fn normalize_recognized_text(
         text: recognized.text,
         confidence: recognized.confidence,
         block_count: recognized.block_count,
+        quality,
     }
+}
+
+/// Project the two engine aggregates onto the content-free capture-health
+/// sample. Only counts cross: neither source struct holds captured text, and
+/// this function deliberately reads no other field of either result.
+fn quality_sample(
+    ocr: &fndr_ocr::OcrAggregateStats,
+    cleanup: &fndr_textsignal::CaptureQualityStats,
+) -> OcrQualitySample {
+    OcrQualitySample {
+        recognized_lines: count(ocr.lines_used.saturating_add(ocr.lines_dropped)),
+        recognized_lines_kept: count(ocr.lines_used),
+        recognized_lines_dropped: count(ocr.lines_dropped),
+        low_confidence_lines: count(ocr.low_conf_count),
+        cleanup_lines: count(cleanup.total_lines),
+        cleanup_lines_kept: count(cleanup.kept_lines),
+        cleanup_lines_dropped_noise: count(cleanup.dropped_noise_lines),
+        cleanup_lines_dropped_low_signal: count(cleanup.dropped_low_signal_lines),
+    }
+}
+
+/// Saturating narrowing: a health counter that wrapped would be worse than
+/// one that pins at its ceiling, and no real frame approaches u32 lines.
+fn count(value: usize) -> u32 {
+    u32::try_from(value).unwrap_or(u32::MAX)
 }
 
 /// The concrete SQLite sink for one scheduler lifetime.
@@ -256,6 +287,13 @@ mod tests {
         }
     }
 
+    fn recognized_with_stats(text: &str, stats: OcrAggregateStats) -> RecognizedText {
+        RecognizedText {
+            ocr_stats: stats,
+            ..recognized(text)
+        }
+    }
+
     #[test]
     fn normalizes_everyday_app_evidence_before_the_pipeline() {
         let fixtures = [
@@ -406,6 +444,82 @@ mod tests {
     }
 
     #[test]
+    fn both_discard_aggregates_survive_the_ocr_boundary_instead_of_being_dropped() {
+        // The Vision recognizer and the cleanup pass each already know what
+        // they threw away; this boundary is the only place that sees both,
+        // and until now it discarded both. Chrome's tab-strip labels give a
+        // fixture where cleanup demonstrably drops lines.
+        let output = normalize_recognized_text(
+            AppIdentity::new("Google Chrome", Some("com.google.Chrome")),
+            recognized_with_stats(
+                "[LOW_CONF] New Tab\nHome\nTrending\nImplement durable OCR evidence cleanup",
+                OcrAggregateStats {
+                    avg_confidence_all: 0.6,
+                    avg_confidence_kept: 0.8,
+                    lines_used: 4,
+                    lines_dropped: 2,
+                    low_conf_count: 1,
+                },
+            ),
+            12,
+        );
+
+        // Recognizer half, taken verbatim from the Vision aggregate.
+        assert_eq!(output.quality.recognized_lines, 6);
+        assert_eq!(output.quality.recognized_lines_kept, 4);
+        assert_eq!(output.quality.recognized_lines_dropped, 2);
+        assert_eq!(output.quality.low_confidence_lines, 1);
+
+        // Cleanup half: four lines examined, only the real sentence kept, and
+        // the browser chrome accounted for as a drop rather than vanishing.
+        assert_eq!(output.quality.cleanup_lines, 4);
+        assert_eq!(output.quality.cleanup_lines_kept, 1);
+        assert_eq!(
+            output.quality.cleanup_lines_dropped_noise
+                + output.quality.cleanup_lines_dropped_low_signal,
+            3,
+            "cleanup dropped three lines and must say so: {:?}",
+            output.quality
+        );
+        assert!(!output.low_signal);
+    }
+
+    #[test]
+    fn the_quality_sample_carries_counts_only_and_no_captured_text() {
+        let output = normalize_recognized_text(
+            AppIdentity::new("Google Chrome", Some("com.google.Chrome")),
+            recognized_with_stats(
+                "Trending\nQuarterly revenue projection for the acquisition",
+                OcrAggregateStats {
+                    lines_used: 2,
+                    lines_dropped: 1,
+                    low_conf_count: 0,
+                    ..OcrAggregateStats::default()
+                },
+            ),
+            12,
+        );
+
+        let rendered = format!("{:?}", output.quality);
+        assert!(!rendered.contains("Quarterly"));
+        assert!(!rendered.contains("acquisition"));
+        assert!(!rendered.contains("Trending"));
+        assert!(!rendered.contains("Chrome"));
+    }
+
+    #[test]
+    fn an_empty_capture_reports_zero_lines_rather_than_a_missing_sample() {
+        let output = normalize_recognized_text(
+            AppIdentity::from_name("Finder"),
+            recognized_with_stats("", OcrAggregateStats::default()),
+            12,
+        );
+
+        assert_eq!(output.quality, OcrQualitySample::default());
+        assert!(output.low_signal);
+    }
+
+    #[test]
     fn pre_capture_gate_uses_the_real_sensitive_context_policy() {
         let gate = PrivacyGate::new(Blocklist::default());
         assert_eq!(
@@ -436,6 +550,7 @@ mod tests {
             confidence: 0.9,
             block_count: 2,
             low_signal: false,
+            quality: OcrQualitySample::default(),
         };
 
         assert_eq!(

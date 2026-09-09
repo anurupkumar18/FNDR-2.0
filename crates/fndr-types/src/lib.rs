@@ -69,6 +69,30 @@ pub struct CaptureTickStatus {
     pub reason: Option<String>,
 }
 
+/// How much evidence OCR and cleanup discarded over the current capture
+/// worker's lifetime. Counts and ratios only: a line of captured text, an app
+/// name, a URL, or a window title must never reach this type.
+///
+/// The two stages stay separate because they fail differently. A high
+/// `recognized_discard_ratio` means the screenshots themselves were poor; a
+/// high `cleanup_discard_ratio` means the app-aware cleanup rules judged the
+/// recognized lines to be chrome or noise.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Type)]
+pub struct CaptureQualityStatus {
+    /// Capture opportunities that reached and completed the OCR boundary.
+    pub samples: u32,
+    pub recognized_lines: u32,
+    pub recognized_lines_dropped: u32,
+    pub low_confidence_lines: u32,
+    pub cleanup_lines: u32,
+    pub cleanup_lines_dropped: u32,
+    /// `null` until at least one line has been observed. Absent rather than
+    /// `0.0`, because "nothing captured yet" and "nothing discarded" are
+    /// opposite health answers and collapsing them hides degradation.
+    pub recognized_discard_ratio: Option<f64>,
+    pub cleanup_discard_ratio: Option<f64>,
+}
+
 /// Push event payload for `capture://status`. Milliseconds use `f64` because
 /// IPC follows ADR-001's no-64-bit-integer convention.
 #[derive(Debug, Clone, PartialEq, Serialize, Type)]
@@ -76,6 +100,10 @@ pub struct CaptureRuntimeStatus {
     pub state: CaptureRuntimeState,
     pub observed_at_ms: f64,
     pub tick: Option<CaptureTickStatus>,
+    /// Lifetime cleanup/OCR discard totals. `None` before the worker has run
+    /// a capture opportunity, and on the startup/shutdown statuses that
+    /// describe lifecycle rather than a tick.
+    pub quality: Option<CaptureQualityStatus>,
     pub shutdown_flushed_chunks: Option<u32>,
     /// A stable, operator-facing startup/shutdown code. It is intentionally
     /// not an arbitrary dependency error string.

@@ -17,8 +17,8 @@ pub use dedup::{PerceptualDeduper, PerceptualSignature, SemanticDedupWindow, sem
 pub use foreground::MacOSForegroundContextSource;
 pub use pipeline::{
     CaptureContext, CaptureContextSource, CaptureCounters, CapturePipeline, CapturePipelineConfig,
-    CaptureSink, CaptureStage, CaptureTickOutcome, GateDecision, OcrOutput, OcrRecognizer,
-    PersistenceOutcome, PipelineError, PreCaptureGate, SkipReason,
+    CaptureQualityTotals, CaptureSink, CaptureStage, CaptureTickOutcome, GateDecision, OcrOutput,
+    OcrQualitySample, OcrRecognizer, PersistenceOutcome, PipelineError, PreCaptureGate, SkipReason,
 };
 pub use sampling::{InputIdleSource, MacOSInputIdle, SamplingDecision, SamplingPolicy};
 pub use source::{

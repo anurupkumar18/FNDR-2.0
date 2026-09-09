@@ -319,6 +319,7 @@ mod tests {
             SchedulerTickOutcome {
                 capture: CaptureTickOutcome::Stored,
                 flush: FlushTickOutcome::NotDue,
+                quality: fndr_capture::CaptureQualityTotals::default(),
             }
         }
 

@@ -57,6 +57,33 @@ export type AuditLogEntry = {
 export type CaptureFlushState = "not_due" | "flushed" | "failed";
 
 /**
+ *  How much evidence OCR and cleanup discarded over the current capture
+ *  worker's lifetime. Counts and ratios only: a line of captured text, an app
+ *  name, a URL, or a window title must never reach this type.
+ * 
+ *  The two stages stay separate because they fail differently. A high
+ *  `recognized_discard_ratio` means the screenshots themselves were poor; a
+ *  high `cleanup_discard_ratio` means the app-aware cleanup rules judged the
+ *  recognized lines to be chrome or noise.
+ */
+export type CaptureQualityStatus = {
+	/**  Capture opportunities that reached and completed the OCR boundary. */
+	samples: number,
+	recognized_lines: number,
+	recognized_lines_dropped: number,
+	low_confidence_lines: number,
+	cleanup_lines: number,
+	cleanup_lines_dropped: number,
+	/**
+	 *  `null` until at least one line has been observed. Absent rather than
+	 *  `0.0`, because "nothing captured yet" and "nothing discarded" are
+	 *  opposite health answers and collapsing them hides degradation.
+	 */
+	recognized_discard_ratio: number | null,
+	cleanup_discard_ratio: number | null,
+};
+
+/**
  *  The shell-owned capture worker's current lifecycle state. This is an IPC
  *  state, not a persisted record lifecycle: it deliberately says whether the
  *  desktop is collecting new context right now.
@@ -71,6 +98,12 @@ export type CaptureRuntimeStatus = {
 	state: CaptureRuntimeState,
 	observed_at_ms: number | null,
 	tick: CaptureTickStatus | null,
+	/**
+	 *  Lifetime cleanup/OCR discard totals. `None` before the worker has run
+	 *  a capture opportunity, and on the startup/shutdown statuses that
+	 *  describe lifecycle rather than a tick.
+	 */
+	quality: CaptureQualityStatus | null,
 	shutdown_flushed_chunks: number | null,
 	/**
 	 *  A stable, operator-facing startup/shutdown code. It is intentionally

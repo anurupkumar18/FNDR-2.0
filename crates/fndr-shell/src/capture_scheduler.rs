@@ -13,8 +13,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use fndr_capture::{
-    CaptureContextSource, CapturePipeline, CapturePipelineConfig, CaptureTickOutcome, FrameSource,
-    MacOSForegroundContextSource, OcrRecognizer, PreCaptureGate, ScreenCaptureKitSource,
+    CaptureContextSource, CapturePipeline, CapturePipelineConfig, CaptureQualityTotals,
+    CaptureTickOutcome, FrameSource, MacOSForegroundContextSource, OcrRecognizer, PreCaptureGate,
+    ScreenCaptureKitSource,
 };
 use fndr_inference::{
     CHUNK_EMBEDDING_V1, Embedder, GgufEmbedder, ModelWorkerHandle, Priority, QueuedEmbedder,
@@ -44,6 +45,11 @@ pub enum FlushTickOutcome {
 pub struct SchedulerTickOutcome {
     pub capture: CaptureTickOutcome,
     pub flush: FlushTickOutcome,
+    /// A snapshot of the lifetime cleanup/OCR discard totals as of this tick.
+    /// Carried on the outcome rather than read back through `counters()` so
+    /// the status bridge, which never holds the scheduler, can report it
+    /// without a second borrow of the capture thread's state.
+    pub quality: CaptureQualityTotals,
 }
 
 /// The scheduler's one-owner composition. Capture dependencies stay generic
@@ -101,13 +107,18 @@ where
     /// tests do not sleep and the worker can use one time source for status.
     pub fn tick(&mut self, now_ms: u64) -> SchedulerTickOutcome {
         let capture = self.pipeline.run_tick();
+        let quality = self.pipeline.counters().quality;
         let flush =
             if now_ms.saturating_sub(self.last_successful_flush_ms) >= self.flush_interval_ms {
                 self.flush_once(now_ms)
             } else {
                 FlushTickOutcome::NotDue
             };
-        SchedulerTickOutcome { capture, flush }
+        SchedulerTickOutcome {
+            capture,
+            flush,
+            quality,
+        }
     }
 
     /// Drain every pending SQLite batch before the capture owner stops. A
@@ -334,6 +345,16 @@ mod tests {
                 confidence: 0.9,
                 block_count: 2,
                 low_signal: false,
+                quality: fndr_capture::OcrQualitySample {
+                    recognized_lines: 6,
+                    recognized_lines_kept: 5,
+                    recognized_lines_dropped: 1,
+                    low_confidence_lines: 2,
+                    cleanup_lines: 5,
+                    cleanup_lines_kept: 3,
+                    cleanup_lines_dropped_noise: 1,
+                    cleanup_lines_dropped_low_signal: 1,
+                },
             })
         }
     }
