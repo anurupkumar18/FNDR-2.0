@@ -491,6 +491,32 @@ prefix) and treat the localized name as a whole-token fallback; never
 substring-match an app name. Mozilla is the worked example for why family
 prefixes need care: `org.mozilla.` covers Thunderbird too.
 
+## 2026-09-09 · A finished agent is not a committed agent
+Cost: a near-total loss of several thousand lines of real, working code
+(a full keyword+vector search engine, a declarative gate-policy table with
+a passing named regression test, a Lance compaction scheduler, and more)
+across nine separate worktrees, discovered only because each one was
+opened and its `git status` read before being deleted. A tenth agent, given
+an explicit "open a draft PR" instruction, still stopped after a passing
+`make test` without committing.
+Root cause: a background agent finishing (or a session crashing) says
+nothing about whether the agent's edits are in git history. Two different
+worktree directories with real diffs and zero commits looked, from the
+outside (a `git branch -a` in the main repo), identical to worktrees that
+had done nothing — the branch pointer is only informative if the agent
+committed to it. "The task notification says completed" and "the work is
+safe" are unrelated facts.
+Rule: before deleting, reusing, or otherwise treating any agent worktree as
+finished (success, failure, or crash alike), `cd` into it and read `git
+status --short` and `git diff --stat` directly — never infer completeness
+from a branch's committed history in the main repo, a task notification's
+`status` field, or an agent's own prose summary. If there is any uncommitted
+diff, commit and push it before doing anything else, even if the work looks
+unfinished or of unknown quality; a `wip:` checkpoint costs nothing and a
+deleted worktree is not recoverable. When briefing an agent whose run might
+be long or might be interrupted, tell it explicitly to commit incrementally
+as it goes, not only once at the very end.
+
 <!-- Inlined from .claude/skills/fndr-feature-dev/SKILL.md -->
 
 
