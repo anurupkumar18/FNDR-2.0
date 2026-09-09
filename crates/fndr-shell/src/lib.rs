@@ -6,6 +6,7 @@ pub mod capture_lifecycle;
 pub mod capture_scheduler;
 pub mod capture_worker;
 pub mod commands;
+pub mod session_identity;
 
 use std::error::Error;
 use std::path::Path;

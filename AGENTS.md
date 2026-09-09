@@ -491,6 +491,20 @@ prefix) and treat the localized name as a whole-token fallback; never
 substring-match an app name. Mozilla is the worked example for why family
 prefixes need care: `org.mozilla.` covers Thunderbird too.
 
+## 2026-09-08 · A shared cargo target dir silently mixes worktrees
+Cost: two red build cycles chasing `missing field quality` errors for a
+field that does not exist anywhere in this worktree's sources.
+Root cause: `CARGO_TARGET_DIR` points every worktree at one shared
+directory. Sibling agent worktrees build the same workspace member names at
+the same version, so their `fndr-types`/`fndr-capture` artifacts are reused
+for this worktree's build, and cargo's mtime fingerprint calls them fresh.
+The compiler then type-checks local code against another branch's types.
+Rule: when a build reports a field, variant, or signature that `grep` cannot
+find in your own tree, suspect the shared target dir before your code.
+`find crates -name '*.rs' -exec touch {} +` forces cargo to rebuild the
+workspace members from the sources in front of you; re-run the failing
+command afterwards and only then believe the error.
+
 <!-- Inlined from .claude/skills/fndr-feature-dev/SKILL.md -->
 
 

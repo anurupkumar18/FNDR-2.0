@@ -300,7 +300,6 @@ impl ShellCaptureState {
                 index_dir: data_dir.join("index"),
                 model_path,
                 blocklist: Blocklist::default(),
-                session_id: format!("desktop-{}", std::process::id()),
                 display_index: 0,
                 flush_interval: Duration::from_secs(30),
                 model_idle_timeout: Duration::from_secs(10 * 60),

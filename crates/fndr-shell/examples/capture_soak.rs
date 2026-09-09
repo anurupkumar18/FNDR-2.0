@@ -94,7 +94,6 @@ fn main() {
             index_dir: PathBuf::from(index_dir),
             model_path: PathBuf::from(model_path),
             blocklist,
-            session_id: format!("soak-{}", std::process::id()),
             display_index,
             flush_interval: Duration::from_secs(30),
             model_idle_timeout: Duration::from_secs(60),

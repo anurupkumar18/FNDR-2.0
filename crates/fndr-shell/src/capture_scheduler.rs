@@ -24,6 +24,7 @@ use fndr_privacy::Blocklist;
 use fndr_store::{FlushError, FlushReport, LanceWriter, Store, StoreError};
 
 use crate::capture_adapters::{PrivacyGate, StoreCaptureSink, VisionOcrAdapter};
+use crate::session_identity::SessionIdentityDeriver;
 
 /// The architecture's minimum 30-second interval. A full pending batch may
 /// request another flush sooner, but ordinary ticks never churn Lance commits.
@@ -154,7 +155,6 @@ pub struct RealSchedulerConfig {
     pub index_dir: PathBuf,
     pub model_path: PathBuf,
     pub blocklist: Blocklist,
-    pub session_id: String,
     pub display_index: usize,
     pub flush_interval: Duration,
     pub model_idle_timeout: Duration,
@@ -188,8 +188,14 @@ impl RealCaptureScheduler {
         }
 
         let store = Store::open(&config.database_path)?;
-        let sink = StoreCaptureSink::new(store, config.blocklist.clone(), config.session_id)
-            .map_err(SchedulerStartError::pipeline)?;
+        // T-307: the lifecycle owner supplies the wall-clock boundary, and the
+        // sink derives session identity per capture from the ported policy.
+        // There is no owner-chosen session id to hand down any more.
+        let sink = StoreCaptureSink::new(
+            store,
+            config.blocklist.clone(),
+            SessionIdentityDeriver::system(),
+        );
         let pipeline = CapturePipeline::new(
             MacOSForegroundContextSource,
             ScreenCaptureKitSource {
@@ -364,9 +370,8 @@ mod tests {
             StoreCaptureSink::new(
                 Store::open_in_memory().unwrap(),
                 Blocklist::default(),
-                "test",
-            )
-            .unwrap(),
+                SessionIdentityDeriver::system(),
+            ),
             CapturePipelineConfig::default(),
         );
         let worker = Arc::new(ModelWorkerHandle::spawn(

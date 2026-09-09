@@ -17,6 +17,8 @@ use fndr_privacy::{
 use fndr_store::{Store, StoreError};
 use fndr_textsignal::{AppIdentity, build_high_signal_text_for_app};
 
+use crate::session_identity::{SessionContext, SessionIdentityDeriver};
+
 /// The metadata-only safety check which runs before `FrameSource::grab`.
 #[derive(Debug, Clone)]
 pub struct PrivacyGate {
@@ -102,35 +104,24 @@ fn normalize_recognized_text(
 
 /// The concrete SQLite sink for one scheduler lifetime.
 ///
-/// `session_id` comes from the scheduler owner. Its temporary monotonically
-/// numbered record IDs intentionally do not claim to implement T-307's
-/// session-continuity policy; that ticket replaces this local allocator.
+/// Session identity is derived per capture from the ported continuity policy
+/// (`fndr_memory::continuity`, resolved to local civil time by
+/// `SessionIdentityDeriver`), not handed in by the owner. Record identity is
+/// derived from that session plus the capture instant, so it is reproducible
+/// and does not restart at zero when the process does.
 pub struct StoreCaptureSink {
     store: Store,
     blocklist: Blocklist,
-    session_id: String,
-    next_sequence: u64,
+    identity: SessionIdentityDeriver,
 }
 
 impl StoreCaptureSink {
-    pub fn new(
-        store: Store,
-        blocklist: Blocklist,
-        session_id: impl Into<String>,
-    ) -> Result<Self, PipelineError> {
-        let session_id = session_id.into();
-        if session_id.trim().is_empty() {
-            return Err(PipelineError::new(
-                CaptureStage::Persistence,
-                "capture sink requires a non-empty session id",
-            ));
-        }
-        Ok(Self {
+    pub fn new(store: Store, blocklist: Blocklist, identity: SessionIdentityDeriver) -> Self {
+        Self {
             store,
             blocklist,
-            session_id,
-            next_sequence: 0,
-        })
+            identity,
+        }
     }
 
     pub fn store(&self) -> &Store {
@@ -143,14 +134,6 @@ impl StoreCaptureSink {
         &mut self.store
     }
 
-    fn ids(&mut self) -> (String, String) {
-        let sequence = self.next_sequence;
-        self.next_sequence = self.next_sequence.saturating_add(1);
-        let record_id = format!("{}-{sequence}", self.session_id);
-        let chunk_id = format!("{record_id}-0");
-        (record_id, chunk_id)
-    }
-
     fn persist(
         &mut self,
         source: &str,
@@ -161,12 +144,30 @@ impl StoreCaptureSink {
         let captured_at_ms = i64::try_from(captured_at_ms).map_err(|_| {
             PipelineError::new(CaptureStage::Persistence, "capture timestamp exceeds i64")
         })?;
-        let (record_id, chunk_id) = self.ids();
+        // Invariant 4: an underivable session is a typed persistence failure
+        // that the lifecycle publishes, never a made-up session id.
+        let identity = self
+            .identity
+            .derive(SessionContext {
+                app_name: &context.app_name,
+                bundle_id: context.bundle_id.as_deref(),
+                window_title: &context.window_title,
+                url: context.url.as_deref(),
+                captured_at_ms,
+            })
+            .map_err(|error| {
+                PipelineError::new(
+                    CaptureStage::Persistence,
+                    format!("session identity unavailable: {error}"),
+                )
+            })?;
+        let record_id = format!("{}-{captured_at_ms}", identity.session_id);
+        let chunk_id = format!("{record_id}-0");
         match persist_capture(
             &mut self.store,
             CaptureForPersistence {
                 record_id: &record_id,
-                session_id: &self.session_id,
+                session_id: &identity.session_id,
                 chunk_id: &chunk_id,
                 source,
                 app_name: &context.app_name,
@@ -228,13 +229,19 @@ mod tests {
     use fndr_capture::CaptureSink;
     use fndr_ocr::OcrAggregateStats;
 
+    use crate::session_identity::FixedOffsetClock;
+
+    /// 2026-05-07T04:46:00Z, i.e. 21:46 at the -07:00 offset the sink tests
+    /// pin, so every expected id below is a fixed, reviewable string.
+    const BASE_MS: u64 = 1_778_129_160_000;
+
     fn context(app: &str, title: &str, url: Option<&str>) -> CaptureContext {
         CaptureContext {
             app_name: app.to_owned(),
             bundle_id: Some("com.example.app".to_owned()),
             window_title: title.to_owned(),
             url: url.map(str::to_owned),
-            observed_at_ms: 1_000,
+            observed_at_ms: BASE_MS,
         }
     }
 
@@ -242,9 +249,10 @@ mod tests {
         StoreCaptureSink::new(
             Store::open_in_memory().unwrap(),
             Blocklist::default(),
-            "session-a",
+            SessionIdentityDeriver::new(FixedOffsetClock {
+                offset_minutes: -7 * 60,
+            }),
         )
-        .unwrap()
     }
 
     fn recognized(text: &str) -> RecognizedText {
@@ -372,7 +380,7 @@ mod tests {
         let mut sink = sink();
         let frame = Frame {
             png: vec![],
-            captured_at_ms: 1_100,
+            captured_at_ms: BASE_MS,
             perceptual_signature: None,
         };
 
@@ -428,7 +436,7 @@ mod tests {
         let mut sink = sink();
         let frame = Frame {
             png: vec![],
-            captured_at_ms: 1_100,
+            captured_at_ms: BASE_MS,
             perceptual_signature: None,
         };
         let ocr = OcrOutput {
@@ -462,11 +470,149 @@ mod tests {
         let pending = sink.store().pending_chunks(10).unwrap();
         assert_eq!(pending[0].text, "FNDR docs\nhttps://docs.example.com/fndr");
         assert_eq!(
-            sink.store().capture_metadata("session-a-0").unwrap(),
+            sink.store()
+                .capture_metadata("20260506-com.example.app-docs_example_com-s43-1778129160000")
+                .unwrap(),
             Some(fndr_store::CaptureMetadata {
                 bundle_id: Some("com.example.app".into()),
                 url: Some("https://docs.example.com/fndr".into()),
             })
         );
+    }
+
+    /// Persist one capture whose evidence, title, and path are unrelated to
+    /// every other capture in the test, so the continuity *merge* policy never
+    /// fires and these tests observe identity alone.
+    fn persist_distinct(sink: &mut StoreCaptureSink, title: &str, slug: &str, captured_at_ms: u64) {
+        let context = context(
+            "Safari",
+            title,
+            Some(&format!("https://docs.example.com/{slug}")),
+        );
+        let frame = Frame {
+            png: vec![],
+            captured_at_ms,
+            perceptual_signature: None,
+        };
+        let ocr = OcrOutput {
+            text: format!("{slug} evidence recorded without any shared vocabulary at all"),
+            confidence: 0.9,
+            block_count: 2,
+            low_signal: false,
+        };
+        assert_eq!(
+            sink.persist_capture(&context, &frame, &ocr),
+            Ok(PersistenceOutcome::Stored)
+        );
+    }
+
+    #[test]
+    fn session_identity_is_stable_in_a_window_and_rolls_over_at_the_policy_boundary() {
+        let mut sink = sink();
+        let captures = [
+            ("Alpha notes", "alpha", 0),
+            ("Beta review", "beta", 3 * 60_000),
+            ("Gamma plan", "gamma", 13 * 60_000),
+            ("Delta summary", "delta", 14 * 60_000),
+        ];
+        for (title, slug, offset_ms) in captures {
+            persist_distinct(&mut sink, title, slug, BASE_MS + offset_ms);
+        }
+
+        let sessions = sink
+            .store()
+            .pending_chunks(10)
+            .unwrap()
+            .into_iter()
+            .map(|chunk| {
+                chunk
+                    .record_id
+                    .rsplit_once('-')
+                    .expect("record id carries its session prefix")
+                    .0
+                    .to_owned()
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            sessions,
+            vec![
+                "20260506-com.example.app-docs_example_com-s43".to_owned(),
+                "20260506-com.example.app-docs_example_com-s43".to_owned(),
+                "20260506-com.example.app-docs_example_com-s43".to_owned(),
+                "20260506-com.example.app-docs_example_com-s44".to_owned(),
+            ],
+            "identity must be stable inside the ported 30-minute window and roll at its boundary"
+        );
+    }
+
+    #[test]
+    fn a_restarted_sink_rejoins_the_same_session_instead_of_restarting_at_zero() {
+        // The replaced allocator numbered records from zero per process, so a
+        // restart inside one window produced colliding record ids under a
+        // different, process-derived session. Derived identity does neither.
+        let mut first = sink();
+        persist_distinct(&mut first, "Alpha notes", "alpha", BASE_MS);
+
+        let mut restarted = StoreCaptureSink::new(
+            first.store,
+            Blocklist::default(),
+            SessionIdentityDeriver::new(FixedOffsetClock {
+                offset_minutes: -7 * 60,
+            }),
+        );
+        persist_distinct(&mut restarted, "Beta review", "beta", BASE_MS + 60_000);
+
+        let record_ids = restarted
+            .store()
+            .pending_chunks(10)
+            .unwrap()
+            .into_iter()
+            .map(|chunk| chunk.record_id)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            record_ids,
+            vec![
+                "20260506-com.example.app-docs_example_com-s43-1778129160000".to_owned(),
+                "20260506-com.example.app-docs_example_com-s43-1778129220000".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn an_underivable_session_fails_the_capture_instead_of_inventing_an_id() {
+        struct NoClock;
+        impl crate::session_identity::LocalClock for NoClock {
+            fn local_civil_time(
+                &self,
+                _unix_ms: i64,
+            ) -> Option<crate::session_identity::LocalCivilTime> {
+                None
+            }
+        }
+
+        let mut sink = StoreCaptureSink::new(
+            Store::open_in_memory().unwrap(),
+            Blocklist::default(),
+            SessionIdentityDeriver::new(NoClock),
+        );
+        let frame = Frame {
+            png: vec![],
+            captured_at_ms: BASE_MS,
+            perceptual_signature: None,
+        };
+        let ocr = OcrOutput {
+            text: "evidence that must not reach a fabricated session".to_owned(),
+            confidence: 0.9,
+            block_count: 2,
+            low_signal: false,
+        };
+
+        let error = sink
+            .persist_capture(&context("Finder", "Project", None), &frame, &ocr)
+            .expect_err("an underivable session is a typed failure, not a fallback id");
+        assert_eq!(error.stage, CaptureStage::Persistence);
+        assert!(error.message.contains("session identity unavailable"));
+        assert!(sink.store().pending_chunks(10).unwrap().is_empty());
     }
 }
