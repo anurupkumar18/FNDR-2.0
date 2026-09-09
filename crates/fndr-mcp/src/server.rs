@@ -1,7 +1,8 @@
 //! The MCP surface (ADR-007). Twelve of the 14 founding tools are wired:
-//! `fndr.search` (over `fndr-retrieval::KeywordRetriever`, not ADR-007's full
+//! `fndr.search` (keyword route plus, when the server is built with one, a
+//! vector route merged by presentation order, not ADR-007's full
 //! hybrid/filtered contract yet), `fndr.context_pack` (budgeted, cited
-//! capture text over that same keyword route), `fndr.privacy_status`,
+//! capture text over those same two routes), `fndr.privacy_status`,
 //! `fndr.timeline`
 //! and `fndr.delta` (both counts only, never capture text),
 //! `fndr.active_focus` (newest capture plus its age and a typed staleness
@@ -40,7 +41,6 @@ use rmcp::{ErrorData, tool, tool_router};
 use serde::{Deserialize, Serialize};
 
 use fndr_privacy::Blocklist;
-use fndr_retrieval::KeywordRetriever;
 use fndr_store::{AuditEntry, Store, TimelineGranularity};
 
 use crate::auth::{AuthConfig, RateWindow, check_request};
@@ -279,21 +279,37 @@ pub struct PackedEvidence {
     /// the tool's note about auditing it as a raw release.
     pub text: String,
     pub estimated_tokens: u32,
+    /// Which route surfaced this item: "keyword" or "vector". Per-item
+    /// tagging, not a blended score: ADR-006 prohibits raw score fusion
+    /// between the routes without a benchmark to justify it.
+    pub route: String,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub struct ContextPackOutput {
     pub goal: String,
-    /// Which retrieval route produced this. Today only `keyword`: there is
-    /// no vector or hybrid route yet, and a pack that hid that would let a
-    /// caller assume semantic recall it did not get.
+    /// Which routes ran: `keyword` when this server has no vector route
+    /// configured, `keyword+vector` when it does. Not a ranking claim; see
+    /// each item's own `route`.
     pub retrieval_route: String,
+    /// True when this server was constructed with a query-side embedder and
+    /// Lance index directory, so a caller can tell "semantic search found
+    /// nothing to add" apart from "semantic search wasn't even attempted"
+    /// (invariant 4: no silent degradation). Mirrors
+    /// `SearchOutput.vector_route_available`.
+    pub vector_route_available: bool,
     pub token_budget: u32,
     pub estimated_tokens_used: u32,
     pub items: Vec<PackedEvidence>,
     /// Records that matched but did not fit the budget, so a thin pack is
     /// never mistaken for a thin memory.
     pub dropped_for_budget: u32,
+    /// How many of `dropped_for_budget` came from the vector route. The
+    /// budget is spent in presentation order (keyword hits first), so a
+    /// keyword-rich goal can exhaust it before reaching the semantic hits;
+    /// without this a caller could not tell that apart from the vector
+    /// route having found nothing.
+    pub vector_dropped_for_budget: u32,
 }
 
 /// How old the newest capture may be before `fndr.active_focus` stops
@@ -871,7 +887,7 @@ impl FndrMcpServer {
 
     #[tool(
         name = "fndr.context_pack",
-        description = "Budgeted, cited context for a goal. Returns stored capture text with a citation on every item, packed until an estimated token budget is spent. Audited as a raw-text release, because that is what it is."
+        description = "Budgeted, cited context for a goal. Runs the keyword route and, when configured, the semantic vector route, then returns stored capture text with a citation and a route tag on every item, packed until an estimated token budget is spent. Audited as a raw-text release, because that is what it is."
     )]
     pub fn context_pack(
         &self,
@@ -901,57 +917,115 @@ impl FndrMcpServer {
         let max_records = max_records.unwrap_or(20).min(100) as usize;
         let budget_chars = token_budget as usize * CHARS_PER_ESTIMATED_TOKEN;
 
-        let store = self
-            .store
-            .lock()
-            .map_err(|_| ErrorData::internal_error("store lock poisoned", None))?;
-        let hits = KeywordRetriever::new(&store)
-            .search(&goal, max_records)
-            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        // Phase 1 of the same three-phase lock discipline `search_inner`
+        // uses: the keyword route under its own lock scope, with the guard
+        // dropped before the vector route runs. A context pack is the
+        // heaviest tool on this surface; holding the store mutex across an
+        // embedding round trip would block every concurrent MCP call on a
+        // lock none of them needs for that duration.
+        let (mut candidates, mut seen): (Vec<fndr_retrieval::TaggedHit>, HashSet<String>) = {
+            let store = self
+                .store
+                .lock()
+                .map_err(|_| ErrorData::internal_error("store lock poisoned", None))?;
+            let mut seen = HashSet::new();
+            let hits = fndr_retrieval::keyword_hits(&store, &goal, max_records, &mut seen)
+                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+            (hits, seen)
+        };
+
+        // Phase 2, with no store lock held: this is the embed+Lance round
+        // trip, which does not touch `store` at all.
+        let vector_route_available = self.vector_route.is_some();
+        let raw_vector_hits = match &self.vector_route {
+            Some((embedder, index_dir)) => block_on_from_sync(fndr_retrieval::vector_hits(
+                embedder.as_ref(),
+                index_dir,
+                &goal,
+                max_records,
+                &mut seen,
+            ))
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?,
+            None => Vec::new(),
+        };
 
         let mut items = Vec::new();
         let mut used_chars = 0usize;
         let mut dropped_for_budget = 0u32;
-        for hit in hits {
-            let Some(evidence) = store
-                .record_evidence(&hit.record_id)
-                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?
-            else {
-                // Deleted between retrieval and packing; a citation to a
-                // record that no longer exists must not reach the caller.
-                continue;
-            };
-            let Some(chunk) = evidence
-                .chunks
-                .into_iter()
-                .find(|chunk| chunk.chunk_id == hit.chunk_id)
-            else {
-                continue;
-            };
-            if used_chars + chunk.text.len() > budget_chars {
-                dropped_for_budget += 1;
-                continue;
+        let mut vector_dropped_for_budget = 0u32;
+        {
+            // Phase 3: the lock back for exactly the synchronous store
+            // reads, and released again before the response is built.
+            let store = self
+                .store
+                .lock()
+                .map_err(|_| ErrorData::internal_error("store lock poisoned", None))?;
+            candidates.extend(fndr_retrieval::tag_vector_hits_with_snippets(
+                &store,
+                raw_vector_hits,
+            ));
+            // Presentation order, not ranking: keyword hits, then the
+            // vector hits the keyword route did not already return. No
+            // blended score decides this, because ADR-006 prohibits raw
+            // score fusion between the routes without a benchmark. The
+            // merged list still honors `max_records`, which is documented
+            // as the ceiling on records considered before budgeting.
+            candidates.truncate(max_records);
+
+            for hit in candidates {
+                let Some(evidence) = store
+                    .record_evidence(&hit.record_id)
+                    .map_err(|e| ErrorData::internal_error(e.to_string(), None))?
+                else {
+                    // Deleted between retrieval and packing; a citation to a
+                    // record that no longer exists must not reach the caller.
+                    // The vector route reaches this more often than the
+                    // keyword one: Lance is a rebuildable derivative, so its
+                    // rows outlive a deleted record until the next rebuild.
+                    continue;
+                };
+                let Some(chunk) = evidence
+                    .chunks
+                    .into_iter()
+                    .find(|chunk| chunk.chunk_id == hit.chunk_id)
+                else {
+                    continue;
+                };
+                if used_chars + chunk.text.len() > budget_chars {
+                    dropped_for_budget += 1;
+                    if hit.route == "vector" {
+                        vector_dropped_for_budget += 1;
+                    }
+                    continue;
+                }
+                used_chars += chunk.text.len();
+                items.push(PackedEvidence {
+                    record_id: evidence.record_id,
+                    chunk_id: chunk.chunk_id,
+                    app_name: evidence.app_name,
+                    window_title: evidence.window_title,
+                    url: evidence.url,
+                    captured_at_ms: evidence.captured_at_ms as f64,
+                    estimated_tokens: chunk.text.len().div_ceil(CHARS_PER_ESTIMATED_TOKEN) as u32,
+                    text: chunk.text,
+                    route: hit.route.to_owned(),
+                });
             }
-            used_chars += chunk.text.len();
-            items.push(PackedEvidence {
-                record_id: evidence.record_id,
-                chunk_id: chunk.chunk_id,
-                app_name: evidence.app_name,
-                window_title: evidence.window_title,
-                url: evidence.url,
-                captured_at_ms: evidence.captured_at_ms as f64,
-                estimated_tokens: chunk.text.len().div_ceil(CHARS_PER_ESTIMATED_TOKEN) as u32,
-                text: chunk.text,
-            });
         }
 
         Ok(Json(ContextPackOutput {
             goal,
-            retrieval_route: "keyword".to_owned(),
+            retrieval_route: if vector_route_available {
+                "keyword+vector".to_owned()
+            } else {
+                "keyword".to_owned()
+            },
+            vector_route_available,
             token_budget,
             estimated_tokens_used: used_chars.div_ceil(CHARS_PER_ESTIMATED_TOKEN) as u32,
             items,
             dropped_for_budget,
+            vector_dropped_for_budget,
         }))
     }
 

@@ -58,26 +58,51 @@ future evidence/citation tools.
 
 ### `fndr.context_pack`
 
-Budgeted, cited context for a goal. Runs the keyword route, then packs
-stored capture text until an estimated token budget is spent, with a
-citation on every item.
+Budgeted, cited context for a goal. Runs the keyword route and, when the
+server was built with a query-side embedder and Lance index directory, the
+semantic vector route, then packs stored capture text until an estimated
+token budget is spent, with a citation on every item.
 
 **Params:** `{ goal: string, token_budget?: number, max_records?: number }`.
 `token_budget` defaults to 2000 (capped 8000), `max_records` to 20 (capped
 100). An empty `goal` is a typed refusal.
 
-**Result:** `{ goal, retrieval_route, token_budget, estimated_tokens_used, dropped_for_budget, items: [{ record_id, chunk_id, app_name, window_title, url?, captured_at_ms, text, estimated_tokens }] }`.
+**Result:** `{ goal, retrieval_route, vector_route_available, token_budget, estimated_tokens_used, dropped_for_budget, vector_dropped_for_budget, items: [{ record_id, chunk_id, app_name, window_title, url?, captured_at_ms, text, estimated_tokens, route }] }`.
 
-Three fields exist to stop a caller over-reading the result:
+The two routes are merged the same way `fndr.search` merges them: keyword
+hits first, then the vector hits the keyword route did not already return,
+deduplicated by `chunk_id`. That is presentation order with per-item route
+tagging, **not** ranking. No blended score exists across the routes, because
+ADR-006 prohibits raw score fusion without a benchmark number to justify it.
+The merged candidate list still honors `max_records`, so a goal whose
+keyword route already fills that ceiling leaves no room for vector hits;
+allocating the ceiling between routes would itself be a ranking decision and
+needs the same bench gate.
 
-- `retrieval_route` is `keyword` — there is no vector or hybrid route yet,
-  and a pack that hid that would let a caller assume semantic recall it did
-  not get.
+Items are packed in that same order, and the budget is spent in it. The full
+stored chunk text is packed, not the 200-character snippet the search route
+builds for a vector hit.
+
+Five fields exist to stop a caller over-reading the result:
+
+- `retrieval_route` is `keyword` when this server has no vector route
+  configured and `keyword+vector` when it does. A pack that hid the
+  difference would let a caller assume semantic recall it did not get.
+- `vector_route_available` is the typed form of that same fact, mirroring
+  `SearchOutput.vector_route_available`: it separates "semantic search found
+  nothing to add" from "semantic search was never attempted".
+- each item's `route` is `keyword` or `vector`, so a caller can see which
+  route surfaced each cited item. A chunk both routes found keeps its
+  `keyword` tag and is packed once.
 - `estimated_tokens_used` is an estimate at four characters per token.
   FNDR has no tokenizer on this path, so the number is honest about being
   approximate rather than pretending to be exact.
 - `dropped_for_budget` counts records that matched but did not fit, so a
-  thin pack is never mistaken for a thin memory.
+  thin pack is never mistaken for a thin memory, and
+  `vector_dropped_for_budget` says how many of those came from the vector
+  route. Because the budget is spent keyword-first, a keyword-rich goal can
+  exhaust it before reaching the semantic hits; without that second count a
+  caller could not tell that apart from the vector route finding nothing.
 
 Unlike `fndr.source_evidence`, this tool has no `include_raw` gate: carrying
 capture text is its entire purpose. It is therefore recorded in the audit
