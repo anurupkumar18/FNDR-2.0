@@ -5,9 +5,12 @@
 //! seams. The continuous worker that owns these adapters lands separately so
 //! lifecycle and shutdown flush can be tested as one slice.
 
+use std::sync::{Arc, Mutex};
+
 use fndr_capture::{
-    CaptureContext, CaptureSink, CaptureStage, Frame, GateDecision, OcrOutput, OcrRecognizer,
-    PersistenceOutcome, PipelineError, PreCaptureGate, SkipReason,
+    CaptureContext, CaptureSink, CaptureStage, CleanupQuality, CleanupSignal, Frame, GateDecision,
+    OcrOutput, OcrRecognizer, PersistenceOutcome, PipelineError, PreCaptureGate, RedactionQuality,
+    SkipReason,
 };
 use fndr_memory::{CaptureForPersistence, PersistCaptureOutcome, persist_capture};
 use fndr_ocr::{OcrEngine, RecognizedText};
@@ -54,13 +57,42 @@ impl PreCaptureGate for PrivacyGate {
 /// semantic deduplication or persistence can observe it. The cleanup itself is
 /// the targeted v1 port owned by `fndr-textsignal`; this adapter only composes
 /// that policy with the engine-owned low-signal decision.
+///
+/// `cleanup_health` accumulates a content-free line-drop signal from every
+/// call (T-306 capture-health gap): counts and ratios only, never the
+/// dropped or kept text itself. It is behind a `Mutex` because
+/// `OcrRecognizer::recognize` takes `&self`; the capture pipeline drives one
+/// tick at a time on its own dedicated thread, so contention is not a
+/// concern. Call `cleanup_handle` before moving this adapter into the
+/// pipeline to retain a queryable clone.
 pub struct VisionOcrAdapter {
     engine: OcrEngine,
+    cleanup_health: Arc<Mutex<CleanupQuality>>,
 }
 
 impl VisionOcrAdapter {
     pub fn new(engine: OcrEngine) -> Self {
-        Self { engine }
+        Self {
+            engine,
+            cleanup_health: Arc::new(Mutex::new(CleanupQuality::default())),
+        }
+    }
+
+    /// A clone of the shared cleanup-quality handle, for a caller that wants
+    /// to query it after this adapter has moved into the pipeline.
+    pub fn cleanup_handle(&self) -> Arc<Mutex<CleanupQuality>> {
+        Arc::clone(&self.cleanup_health)
+    }
+
+    /// The cleanup-quality snapshot observed so far. A poisoned lock (only
+    /// possible after an unrelated panic on the capture thread) degrades to
+    /// the last-known snapshot rather than propagating into the capture
+    /// path; this is a diagnostic aggregate, not a decision input.
+    pub fn cleanup_health(&self) -> CleanupQuality {
+        self.cleanup_health
+            .lock()
+            .map(|guard| *guard)
+            .unwrap_or_default()
     }
 }
 
@@ -76,11 +108,15 @@ impl OcrRecognizer for VisionOcrAdapter {
             .engine
             .recognize_with_metadata(png)
             .map_err(|error| PipelineError::new(CaptureStage::Ocr, error.to_string()))?;
-        Ok(normalize_recognized_text(
+        let (output, cleanup) = normalize_recognized_text(
             AppIdentity::new(app_name, bundle_id),
             recognized,
             min_chars,
-        ))
+        );
+        if let Ok(mut health) = self.cleanup_health.lock() {
+            health.record(cleanup);
+        }
+        Ok(output)
     }
 }
 
@@ -88,16 +124,25 @@ fn normalize_recognized_text(
     app: AppIdentity<'_>,
     mut recognized: RecognizedText,
     min_chars: usize,
-) -> OcrOutput {
+) -> (OcrOutput, CleanupSignal) {
     let high_signal = build_high_signal_text_for_app(app, &recognized.text);
     recognized.text = high_signal.text;
+    let stats = high_signal.stats;
 
-    OcrOutput {
+    let output = OcrOutput {
         low_signal: recognized.is_low_signal(min_chars),
         text: recognized.text,
         confidence: recognized.confidence,
         block_count: recognized.block_count,
-    }
+    };
+    let cleanup = CleanupSignal {
+        total_lines: stats.total_lines,
+        kept_lines: stats.kept_lines,
+        dropped_noise_lines: stats.dropped_noise_lines,
+        dropped_low_signal_lines: stats.dropped_low_signal_lines,
+        low_conf_lines: stats.low_conf_lines,
+    };
+    (output, cleanup)
 }
 
 /// The concrete SQLite sink for one scheduler lifetime.
@@ -110,6 +155,7 @@ pub struct StoreCaptureSink {
     blocklist: Blocklist,
     session_id: String,
     next_sequence: u64,
+    redaction_health: RedactionQuality,
 }
 
 impl StoreCaptureSink {
@@ -130,11 +176,18 @@ impl StoreCaptureSink {
             blocklist,
             session_id,
             next_sequence: 0,
+            redaction_health: RedactionQuality::default(),
         })
     }
 
     pub fn store(&self) -> &Store {
         &self.store
+    }
+
+    /// The redaction-rate snapshot observed so far (T-306 capture-health
+    /// gap): counts and a ratio only, never the redacted text itself.
+    pub fn redaction_health(&self) -> RedactionQuality {
+        self.redaction_health
     }
 
     /// The scheduler is the single owner of this sink and borrows the store
@@ -181,7 +234,9 @@ impl StoreCaptureSink {
         )
         .map_err(store_error)?
         {
-            PersistCaptureOutcome::Stored { .. } | PersistCaptureOutcome::Merged { .. } => {
+            PersistCaptureOutcome::Stored { redaction_count, .. }
+            | PersistCaptureOutcome::Merged { redaction_count, .. } => {
+                self.redaction_health.record(redaction_count);
                 Ok(PersistenceOutcome::Stored)
             }
             PersistCaptureOutcome::Skipped { .. } => Ok(PersistenceOutcome::SkippedFinalPrivacy),
@@ -286,7 +341,7 @@ mod tests {
         ];
 
         for (app_name, raw, expected, rejected) in fixtures {
-            let output =
+            let (output, _cleanup) =
                 normalize_recognized_text(AppIdentity::from_name(app_name), recognized(raw), 12);
             assert!(!output.low_signal, "{app_name} fixture should be admitted");
             assert!(
@@ -304,7 +359,7 @@ mod tests {
 
     #[test]
     fn chrome_only_evidence_becomes_an_observable_low_signal_skip() {
-        let output = normalize_recognized_text(
+        let (output, cleanup) = normalize_recognized_text(
             AppIdentity::from_name("Google Chrome"),
             recognized("[LOW_CONF] New Tab\nHome\nTrending\nNotifications\nExplore"),
             12,
@@ -312,6 +367,14 @@ mod tests {
 
         assert!(output.low_signal);
         assert!(output.text.is_empty());
+        // Every line here is browser chrome, so the cleanup-quality signal
+        // must show the drop, not silently report nothing observed.
+        assert_eq!(cleanup.total_lines, 5);
+        assert_eq!(cleanup.kept_lines, 0);
+        assert_eq!(
+            cleanup.dropped_noise_lines + cleanup.dropped_low_signal_lines,
+            5
+        );
     }
 
     #[test]
@@ -322,12 +385,12 @@ mod tests {
         // held to the generic thresholds and reached durable memory.
         let raw = "Navegacion privada\nNew Tab\nTrending\nShip the durable capture cleanup slice";
 
-        let by_bundle = normalize_recognized_text(
+        let (by_bundle, bundle_cleanup) = normalize_recognized_text(
             AppIdentity::new("Navegador", Some("com.google.Chrome")),
             recognized(raw),
             12,
         );
-        let by_name_only =
+        let (by_name_only, _) =
             normalize_recognized_text(AppIdentity::from_name("Navegador"), recognized(raw), 12);
 
         assert!(
@@ -346,11 +409,14 @@ mod tests {
              so this fixture would not prove the bundle did the work: {}",
             by_name_only.text
         );
+        // Bundle-aware cleanup dropped at least the "New Tab"/"Trending" nav
+        // lines, so the cleanup-quality signal must reflect that drop.
+        assert!(bundle_cleanup.dropped_noise_lines + bundle_cleanup.dropped_low_signal_lines >= 2);
     }
 
     #[test]
     fn literal_confidence_token_in_captured_code_is_preserved() {
-        let output = normalize_recognized_text(
+        let (output, _cleanup) = normalize_recognized_text(
             AppIdentity::from_name("Terminal"),
             recognized("let marker = \"[LOW_CONF]\";\nPersist literal tokens in captured code"),
             12,
@@ -362,7 +428,7 @@ mod tests {
 
     #[test]
     fn normalized_browser_evidence_is_what_durable_search_observes() {
-        let output = normalize_recognized_text(
+        let (output, _cleanup) = normalize_recognized_text(
             AppIdentity::from_name("Google Chrome"),
             recognized(
                 "[LOW_CONF] New Tab\n[LOW_CONF] Home\nImplement durable OCR evidence cleanup",
@@ -402,6 +468,20 @@ mod tests {
                 .search_chunks("LOW_CONF", 10)
                 .unwrap()
                 .is_empty()
+        );
+        // This text carried no secret pattern, so the redaction-health
+        // aggregate must count the persisted capture without counting a
+        // redaction.
+        assert_eq!(sink.redaction_health().persisted_captures(), 1);
+        assert_eq!(sink.redaction_health().redacted_captures(), 0);
+    }
+
+    #[test]
+    fn redaction_health_is_unmeasured_until_a_capture_persists() {
+        let sink = sink();
+        assert_eq!(
+            sink.redaction_health().redaction_rate(),
+            fndr_capture::QualityRate::Unmeasured
         );
     }
 

@@ -96,6 +96,13 @@ where
         self.pipeline.sink().store()
     }
 
+    /// The redaction-rate half of the T-306 capture-health aggregate (see
+    /// `fndr_capture::health`). `S` is fixed as `StoreCaptureSink`, which
+    /// owns this accumulator, so it is available generically.
+    pub fn redaction_health(&self) -> fndr_capture::RedactionQuality {
+        self.pipeline.sink().redaction_health()
+    }
+
     /// Run exactly one capture opportunity, then flush only when the bounded
     /// cadence is due. The caller supplies the monotonic wall-clock value so
     /// tests do not sleep and the worker can use one time source for status.
@@ -171,6 +178,12 @@ pub struct RealCaptureScheduler {
         VisionOcrAdapter,
     >,
     _model_worker: Arc<ModelWorkerHandle>,
+    /// A clone of the `VisionOcrAdapter`'s cleanup-quality handle, kept here
+    /// because the adapter itself moves into the pipeline and `O` is not
+    /// exposed generically (see `fndr_capture::health` for the T-306
+    /// capture-health aggregate this joins with `redaction_health` and
+    /// `counters` to form the full report).
+    cleanup_health: Arc<std::sync::Mutex<fndr_capture::CleanupQuality>>,
 }
 
 impl RealCaptureScheduler {
@@ -190,13 +203,17 @@ impl RealCaptureScheduler {
         let store = Store::open(&config.database_path)?;
         let sink = StoreCaptureSink::new(store, config.blocklist.clone(), config.session_id)
             .map_err(SchedulerStartError::pipeline)?;
+        let ocr_adapter = VisionOcrAdapter::new(OcrEngine::new()?);
+        // Taken before the adapter moves into the pipeline; see the
+        // `cleanup_health` field doc for why this is the only way out.
+        let cleanup_health = ocr_adapter.cleanup_handle();
         let pipeline = CapturePipeline::new(
             MacOSForegroundContextSource,
             ScreenCaptureKitSource {
                 display_index: config.display_index,
             },
             PrivacyGate::new(config.blocklist),
-            VisionOcrAdapter::new(OcrEngine::new()?),
+            ocr_adapter,
             sink,
             CapturePipelineConfig::default(),
         );
@@ -225,6 +242,7 @@ impl RealCaptureScheduler {
         Ok(Self {
             scheduler,
             _model_worker: worker,
+            cleanup_health,
         })
     }
 
@@ -234,6 +252,22 @@ impl RealCaptureScheduler {
 
     pub fn counters(&self) -> &fndr_capture::CaptureCounters {
         self.scheduler.counters()
+    }
+
+    /// The full T-306 content-free capture-health snapshot: skip counts by
+    /// `SkipReason` (`counters()`), the redaction rate, and the cleanup-drop
+    /// rate. This is the shape a future health panel or `fndr.health`-style
+    /// MCP tool would read; nothing here decides capture behavior.
+    pub fn health_report(&self) -> fndr_capture::CaptureHealthReport {
+        fndr_capture::CaptureHealthReport {
+            skips: self.scheduler.counters().clone(),
+            redaction: self.scheduler.redaction_health(),
+            cleanup: self
+                .cleanup_health
+                .lock()
+                .map(|guard| *guard)
+                .unwrap_or_default(),
+        }
     }
 
     pub fn flush_on_shutdown(&mut self, now_ms: u64) -> Result<usize, FlushError> {
@@ -422,5 +456,22 @@ mod tests {
 
         assert_eq!(scheduler.flush_on_shutdown(1_002).unwrap(), 1);
         assert!(scheduler.store().pending_chunks(10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn redaction_health_is_unmeasured_before_the_first_tick_then_reflects_it() {
+        let mut scheduler = scheduler(Duration::from_millis(1));
+        assert_eq!(
+            scheduler.redaction_health().redaction_rate(),
+            fndr_capture::QualityRate::Unmeasured
+        );
+
+        assert_eq!(scheduler.tick(1_001).capture, CaptureTickOutcome::Stored);
+
+        // The fixture text carries no secret pattern, so one capture
+        // persisted with zero redactions: measured, not merely absent.
+        let redaction = scheduler.redaction_health();
+        assert_eq!(redaction.persisted_captures(), 1);
+        assert_eq!(redaction.redaction_rate(), fndr_capture::QualityRate::Measured(0.0));
     }
 }
