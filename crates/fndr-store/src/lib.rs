@@ -7,12 +7,17 @@
 //! `SkeletonStore` is the walking-skeleton stand-in (T-109); it dies when the
 //! real read/write paths replace it in E02/E03.
 
+mod compaction;
 mod deletion;
 mod lance_writer;
 mod migrations;
 mod skeleton;
 mod store;
 
+pub use compaction::{
+    CompactionOutcome, CompactionReport, MAINTENANCE_INTERVAL_SECS_MAX,
+    MAINTENANCE_INTERVAL_SECS_MIN,
+};
 pub use deletion::{DeletionError, DeletionReport, delete_everywhere};
 pub use lance_writer::{
     FLUSH_BATCH_SIZE, FLUSH_INTERVAL_SECS_MAX, FLUSH_INTERVAL_SECS_MIN, FlushError, FlushReport,

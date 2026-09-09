@@ -7,6 +7,11 @@
 //! Tauri runtime only to wait for Lance's async API after a record is already
 //! durable in SQLite. A flush failure remains visible and leaves that truth
 //! pending for the next tick or shutdown flush.
+//!
+//! T-204: this is also the only place that drives
+//! `LanceWriter::compact_and_prune`, on its own, much coarser cadence. There
+//! is exactly one tick loop for capture-owned Lance maintenance; compaction
+//! is folded into it rather than spawning a second background loop.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -21,7 +26,9 @@ use fndr_inference::{
 };
 use fndr_ocr::{OcrEngine, OcrError};
 use fndr_privacy::Blocklist;
-use fndr_store::{FlushError, FlushReport, LanceWriter, Store, StoreError};
+use fndr_store::{
+    CompactionOutcome, CompactionReport, FlushError, FlushReport, LanceWriter, Store, StoreError,
+};
 
 use crate::capture_adapters::{PrivacyGate, StoreCaptureSink, VisionOcrAdapter};
 
@@ -29,11 +36,34 @@ use crate::capture_adapters::{PrivacyGate, StoreCaptureSink, VisionOcrAdapter};
 /// request another flush sooner, but ordinary ticks never churn Lance commits.
 pub const MIN_FLUSH_INTERVAL: Duration = Duration::from_secs(30);
 
+/// The floor for compaction/prune cadence (T-204), mirroring
+/// `fndr_store::MAINTENANCE_INTERVAL_SECS_MIN`. Compaction and prune cost
+/// real time (T-208 spike: roughly 511 ms compact plus 57 ms explicit prune
+/// at 100k rows), so this runs far less often than the flush cadence above --
+/// doing it on every 30-60 second flush would waste that cost on a table
+/// with nothing new to compact.
+pub const MIN_MAINTENANCE_INTERVAL: Duration = Duration::from_secs(15 * 60);
+
 /// Observable result of the durable-index portion of one capture tick.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FlushTickOutcome {
     NotDue,
     Flushed(FlushReport),
+    Failed(String),
+}
+
+/// Observable result of the periodic Lance maintenance portion of the
+/// scheduler (T-204). `NotDue` and `Failed` are surfaced just as explicitly
+/// as `Ran`: maintenance that silently never runs, or silently swallows a
+/// failure, is exactly the "no silent degradation" failure this exists to
+/// prevent. `last_maintenance` on `CaptureScheduler`/`RealCaptureScheduler`
+/// always reflects the most recent attempt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MaintenanceTickOutcome {
+    NotDue,
+    /// Nothing has ever been flushed to the table yet; not an error.
+    NoTable,
+    Ran(CompactionReport),
     Failed(String),
 }
 
@@ -55,6 +85,9 @@ pub struct CaptureScheduler<C, F, G, O> {
     embedder: QueuedEmbedder,
     last_successful_flush_ms: u64,
     flush_interval_ms: u64,
+    last_successful_maintenance_ms: u64,
+    maintenance_interval_ms: u64,
+    last_maintenance: MaintenanceTickOutcome,
 }
 
 impl<C, F, G, O> CaptureScheduler<C, F, G, O>
@@ -70,6 +103,7 @@ where
         embedder: QueuedEmbedder,
         started_at_ms: u64,
         flush_interval: Duration,
+        maintenance_interval: Duration,
     ) -> Result<Self, SchedulerStartError> {
         let flush_interval_ms = u64::try_from(flush_interval.as_millis()).map_err(|_| {
             SchedulerStartError::InvalidFlushInterval("interval does not fit in milliseconds")
@@ -79,12 +113,26 @@ where
                 "interval must be greater than zero",
             ));
         }
+        let maintenance_interval_ms =
+            u64::try_from(maintenance_interval.as_millis()).map_err(|_| {
+                SchedulerStartError::InvalidMaintenanceInterval(
+                    "interval does not fit in milliseconds",
+                )
+            })?;
+        if maintenance_interval_ms == 0 {
+            return Err(SchedulerStartError::InvalidMaintenanceInterval(
+                "interval must be greater than zero",
+            ));
+        }
         Ok(Self {
             pipeline,
             writer,
             embedder,
             last_successful_flush_ms: started_at_ms,
             flush_interval_ms,
+            last_successful_maintenance_ms: started_at_ms,
+            maintenance_interval_ms,
+            last_maintenance: MaintenanceTickOutcome::NotDue,
         })
     }
 
@@ -94,6 +142,15 @@ where
 
     pub fn store(&self) -> &Store {
         self.pipeline.sink().store()
+    }
+
+    /// The outcome of the most recent compaction/prune attempt (T-204),
+    /// `NotDue` until the maintenance cadence first elapses. Kept distinct
+    /// from `SchedulerTickOutcome` because maintenance runs on its own,
+    /// much coarser cadence than capture/flush and most ticks have nothing
+    /// new to report here.
+    pub fn last_maintenance(&self) -> &MaintenanceTickOutcome {
+        &self.last_maintenance
     }
 
     /// Run exactly one capture opportunity, then flush only when the bounded
@@ -107,6 +164,10 @@ where
             } else {
                 FlushTickOutcome::NotDue
             };
+        if now_ms.saturating_sub(self.last_successful_maintenance_ms) >= self.maintenance_interval_ms
+        {
+            self.run_maintenance(now_ms);
+        }
         SchedulerTickOutcome { capture, flush }
     }
 
@@ -142,6 +203,28 @@ where
             &self.embedder,
             now_ms,
         ))
+    }
+
+    /// Compact and explicitly prune the same table `flush_once` writes to
+    /// (T-204). A failure here never touches `last_successful_maintenance_ms`,
+    /// so the next tick retries rather than waiting out a full interval --
+    /// the same retry discipline `flush_once` already uses. This goes
+    /// through `self.writer` (the single Lance writer, ADR-002), never a
+    /// second connection.
+    fn run_maintenance(&mut self, now_ms: u64) {
+        let table_name = self.embedder.spec().lance_table;
+        let outcome = tauri::async_runtime::block_on(self.writer.compact_and_prune(table_name));
+        self.last_maintenance = match outcome {
+            Ok(CompactionOutcome::NoTable) => {
+                self.last_successful_maintenance_ms = now_ms;
+                MaintenanceTickOutcome::NoTable
+            }
+            Ok(CompactionOutcome::Ran(report)) => {
+                self.last_successful_maintenance_ms = now_ms;
+                MaintenanceTickOutcome::Ran(report)
+            }
+            Err(error) => MaintenanceTickOutcome::Failed(error.to_string()),
+        };
     }
 }
 

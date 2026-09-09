@@ -57,7 +57,10 @@ pub struct FlushReport {
 }
 
 pub struct LanceWriter {
-    uri: String,
+    // pub(crate) so the compaction/prune module (T-204) can open the same
+    // table through this writer's URI instead of standing up a second,
+    // competing connection.
+    pub(crate) uri: String,
 }
 
 impl LanceWriter {
