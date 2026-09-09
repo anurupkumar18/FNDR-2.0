@@ -162,13 +162,32 @@ pub struct RecognizedText {
 impl RecognizedText {
     /// Decide whether a frame's OCR evidence is too weak to store.
     ///
-    /// The rejection rules are the explicit checks below, and `min_chars`
-    /// (the scheduler's `min_ocr_chars`) is the single source of truth for
-    /// "too short". `text_volume_qualifies` is consulted only as a positive
-    /// override; it can rescue a frame, never discard one. Inverting that
-    /// (`!text_volume_qualifies(..)`) silently raised the effective floor to
-    /// its internal 80-char admit threshold and discarded almost every real
-    /// short capture, which is what this shape exists to prevent.
+    /// Provenance correction (2026-09-08). An earlier revision of this comment
+    /// claimed v1 used `text_volume_qualifies` as an admit-only override and
+    /// that the v2 port inverted it. That is false. v1's `is_low_signal`
+    /// (`src-tauri/src/ocr/vision.rs:160` on the `reference/v1` branch) ends in
+    /// `!text_volume_qualifies(..)` verbatim, and the v2 port was faithful.
+    ///
+    /// The real regression is at the CALL SITE, not here. v1
+    /// (`src-tauri/src/capture/mod.rs:2378`) treated a low-signal verdict as a
+    /// route, not a verdict: `if source_low_signal || text.len() < min_text_length`
+    /// fell through to a visual-narrative path that still stored a record from
+    /// window metadata, with a comment stating that a missing VLM "falls back to
+    /// OCR/window metadata instead of forcing a hard skip." v2's pipeline
+    /// (`fndr-capture/src/pipeline.rs`) instead returns a terminal
+    /// `SkipReason::LowSignal`, so the frame is lost outright.
+    ///
+    /// So the strict gate was never the whole story in v1; it was the strict
+    /// half of a two-path decision. This shape (admit-override plus explicit
+    /// rejects) is a deliberate interim loosening so real captures are not
+    /// silently dropped while only one path exists. It is not a restoration of
+    /// v1 behavior and should not be described as one. The correct fix is
+    /// T-309's declarative gate policy plus a replay harness reporting per-gate
+    /// drop deltas, which names this exact regression class as its test.
+    ///
+    /// `min_chars` (the scheduler's `min_ocr_chars`) is the source of truth for
+    /// "too short"; `text_volume_qualifies` can only rescue a frame here, never
+    /// discard one.
     pub fn is_low_signal(&self, min_chars: usize) -> bool {
         let char_count = self.text.trim().len();
         if char_count < min_chars {
@@ -626,17 +645,25 @@ fn size_regex() -> &'static Regex {
 /// because Apple Vision's confidence model is calibrated for documents, not UI.
 /// Do not use confidence alone to gate high-volume frames.
 ///
-/// This is a high-precision ADMIT rule: `true` means "store this". `false`
-/// means only "not proven high-value", NOT "discard": the complement of
-/// "definitely keep" is not "definitely junk". `is_low_signal` owns rejection.
+/// v2 uses this as a high-precision ADMIT rule: `true` means "store this",
+/// `false` means only "not proven high-value", NOT "discard". `is_low_signal`
+/// owns rejection.
 ///
-/// Measured on macOS 26 (2026-09-07, 13 rendered screens spanning terminal,
-/// chat, code, prose, pristine and degraded): `VNRecognizeTextRequest` at
-/// `Accurate` level returns a per-line confidence of exactly 0.50 for every
-/// legible line, and never above it. The `>= 0.55` arm below is therefore
-/// unreachable in production; it is kept only because these constants are
-/// calibrated as an admit rule and loosening them would widen admission
-/// rather than fix anything.
+/// Note that this is a v2 reinterpretation, not the v1 contract. v1 consumed
+/// the same constants in the negated form (`!text_volume_qualifies(..)`), so
+/// they were calibrated as the strict half of a two-path decision whose other
+/// path still stored the frame. See the provenance note on `is_low_signal`.
+/// Treat the thresholds below as inherited, not as validated for admit-only
+/// use; T-309's replay harness is what would actually re-validate them.
+///
+/// Reported measurement (2026-09-07, macOS 26, 13 rendered screens spanning
+/// terminal, chat, code, and prose, pristine and degraded): `VNRecognizeTextRequest`
+/// at `Accurate` level returned a per-line confidence of exactly 0.50 for every
+/// legible line. That is consistent with the v1 observation above that screen
+/// OCR clusters around 0.40 to 0.65, and it implies the `>= 0.55` arm below is
+/// effectively unreachable in production. It has not been independently
+/// re-measured, so treat "never above 0.50" as a strong indication rather than
+/// a proven bound.
 pub fn text_volume_qualifies(char_count: usize, ocr_confidence: f32, block_count: usize) -> bool {
     if char_count == 0 {
         return false;

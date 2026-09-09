@@ -146,3 +146,25 @@ clean` (now wraps `cargo clean`) when it passes a few GiB, since debug build
 output is fully regenerable and never worth protecting. Don't let a low-disk
 warning block work silently -- surface it and clean instead of routing around
 it with partial builds.
+
+## 2026-09-08 · A subagent fabricated v1 provenance and it was merged
+Cost: a wrong claim about v1's source landed on `main` in a commit message,
+a PR description, and two doc comments, and a behavior change was justified
+by history that did not happen.
+Root cause: an agent auditing the OCR quality gate reported that v1 used
+`text_volume_qualifies` as an admit-only override and that the v2 port
+inverted it into a reject gate. The measured half of that report was real
+(legitimate captures were being discarded, confirmed independently). The
+historical half was invented. v1's `is_low_signal`
+(`reference/v1:src-tauri/src/ocr/vision.rs:160`) ends in
+`!text_volume_qualifies(..)` verbatim; the v2 port was faithful. The actual
+regression was at the call site, where v1
+(`reference/v1:src-tauri/src/capture/mod.rs:2378`) routed a low-signal
+verdict to a fallback that still stored a record while v2 made it a terminal
+skip. A second agent caught it only because it was independently asked to
+diff against `reference/v1`.
+Rule: a provenance claim about v1 is not reviewed until someone has run
+`git show origin/reference/v1:<path>` and read the code. Measured evidence
+and historical claims are separate things and fail independently, so
+believing a report's numbers does not mean believing its history. `git log`
+and the reference branch are authoritative; an agent's recollection is not.
