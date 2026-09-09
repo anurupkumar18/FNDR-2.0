@@ -6,49 +6,23 @@
 //! lifecycle and shutdown flush can be tested as one slice.
 
 use fndr_capture::{
-    CaptureContext, CaptureSink, CaptureStage, Frame, GateDecision, OcrOutput, OcrRecognizer,
-    PersistenceOutcome, PipelineError, PreCaptureGate, SkipReason,
+    CaptureContext, CaptureSink, CaptureStage, Frame, OcrOutput, OcrRecognizer, PersistenceOutcome,
+    PipelineError,
 };
 use fndr_memory::{CaptureForPersistence, PersistCaptureOutcome, persist_capture};
 use fndr_ocr::{OcrEngine, RecognizedText};
-use fndr_privacy::{
-    Blocklist, SafetyContext, SafetyDecision, SafetyReason, evaluate, sanitize_url_for_storage,
-};
+use fndr_privacy::{Blocklist, sanitize_url_for_storage};
 use fndr_store::{Store, StoreError};
 use fndr_textsignal::{AppIdentity, build_high_signal_text_for_app};
 
-/// The metadata-only safety check which runs before `FrameSource::grab`.
-#[derive(Debug, Clone)]
-pub struct PrivacyGate {
-    blocklist: Blocklist,
-}
-
-impl PrivacyGate {
-    pub fn new(blocklist: Blocklist) -> Self {
-        Self { blocklist }
-    }
-}
-
-impl PreCaptureGate for PrivacyGate {
-    fn evaluate(&self, context: &CaptureContext) -> GateDecision {
-        match evaluate(
-            SafetyContext {
-                app_name: Some(&context.app_name),
-                bundle_id: context.bundle_id.as_deref(),
-                url: context.url.as_deref(),
-                window_title: Some(&context.window_title),
-                ocr_text: None,
-            },
-            &self.blocklist,
-        ) {
-            SafetyDecision::SkipStorage(SafetyReason::PrivateBrowsing) => {
-                GateDecision::Skip(SkipReason::PrivateBrowsing)
-            }
-            SafetyDecision::SkipStorage(_) => GateDecision::Skip(SkipReason::PreCapturePrivacy),
-            SafetyDecision::Allow | SafetyDecision::Redact(_) => GateDecision::Allow,
-        }
-    }
-}
+/// The metadata-stage gate that runs before `FrameSource::grab`.
+///
+/// T-309 replaced this shell-local match over `SafetyDecision` with
+/// `fndr_capture::PolicyGate`, which evaluates the declarative capture gate
+/// policy table. The shell no longer owns a second, drift-prone mapping from
+/// safety reasons onto `SkipReason`s, and the offline replay harness scores
+/// the exact object the pipeline runs.
+pub type PrivacyGate = fndr_capture::PolicyGate;
 
 /// Converts Vision output into app-aware, high-signal evidence before either
 /// semantic deduplication or persistence can observe it. The cleanup itself is
@@ -407,6 +381,8 @@ mod tests {
 
     #[test]
     fn pre_capture_gate_uses_the_real_sensitive_context_policy() {
+        use fndr_capture::{GateDecision, PreCaptureGate, SkipReason};
+
         let gate = PrivacyGate::new(Blocklist::default());
         assert_eq!(
             gate.evaluate(&context("1Password", "Vault", None)),
@@ -420,6 +396,16 @@ mod tests {
             gate.evaluate(&context("Google Chrome", "New Incognito Window", None)),
             GateDecision::Skip(SkipReason::PrivateBrowsing),
             "a private-browsing cue must be observable before pixels are captured"
+        );
+        // The same seam now carries browser admission, so the shell keeps no
+        // second copy of that policy (T-309).
+        assert_eq!(
+            gate.evaluate(&context(
+                "Google Chrome",
+                "screen_pipe - YouTube",
+                Some("https://www.youtube.com/@screen_pipe/videos"),
+            )),
+            GateDecision::UrlOnly
         );
     }
 

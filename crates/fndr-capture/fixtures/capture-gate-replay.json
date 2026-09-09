@@ -1,0 +1,167 @@
+{
+  "name": "synthetic-desktop-day",
+  "fixtures": [
+    {
+      "id": "blocklist-app-notes",
+      "note": "Owner excluded this app by name; the user blocklist must win before every built-in rule.",
+      "app_name": "Notes",
+      "bundle_id": "com.apple.Notes",
+      "window_title": "Grocery list",
+      "url": null,
+      "ocr_text": null
+    },
+    {
+      "id": "blocklist-domain-internal-wiki",
+      "note": "Owner excluded this domain; suffix matching, not substring matching.",
+      "app_name": "Safari",
+      "bundle_id": "com.apple.Safari",
+      "window_title": "Team page",
+      "url": "https://internal-wiki.example/page",
+      "ocr_text": null
+    },
+    {
+      "id": "fndr-self-capture",
+      "note": "FNDR must never record its own window and re-ingest its own memory.",
+      "app_name": "FNDR",
+      "bundle_id": "com.fndr.desktop",
+      "window_title": "Memory timeline",
+      "url": null,
+      "ocr_text": null
+    },
+    {
+      "id": "password-manager-vault",
+      "note": "Adversarial class: password managers.",
+      "app_name": "1Password",
+      "bundle_id": "com.1password.1password",
+      "window_title": "Personal vault",
+      "url": null,
+      "ocr_text": null
+    },
+    {
+      "id": "private-browsing-window",
+      "note": "Adversarial class: private browsing. Withheld with its own counter so the reason can be shown without the title.",
+      "app_name": "Google Chrome",
+      "bundle_id": "com.google.Chrome",
+      "window_title": "New Incognito Window",
+      "url": null,
+      "ocr_text": null
+    },
+    {
+      "id": "banking-account-overview",
+      "note": "Adversarial class: banking. Synthetic account page on a real bank domain, no real data.",
+      "app_name": "Safari",
+      "bundle_id": "com.apple.Safari",
+      "window_title": "Account overview",
+      "url": "https://online.chase.com/accounts",
+      "ocr_text": null
+    },
+    {
+      "id": "medical-patient-portal",
+      "note": "Adversarial class: medical. Fictional hospital on a mychart-style host.",
+      "app_name": "Safari",
+      "bundle_id": "com.apple.Safari",
+      "window_title": "Lab results",
+      "url": "https://mychart.example-hospital.com/results",
+      "ocr_text": null
+    },
+    {
+      "id": "authentication-sign-in",
+      "note": "Adversarial class: authentication surfaces.",
+      "app_name": "Safari",
+      "bundle_id": "com.apple.Safari",
+      "window_title": "Sign in",
+      "url": "https://accounts.example.com/login",
+      "ocr_text": null
+    },
+    {
+      "id": "browser-new-tab",
+      "note": "Browser chrome with no content of its own.",
+      "app_name": "Google Chrome",
+      "bundle_id": "com.google.Chrome",
+      "window_title": "New Tab",
+      "url": "https://example.com/",
+      "ocr_text": null
+    },
+    {
+      "id": "navigation-search-results",
+      "note": "Transient navigation surface: a results page is not a memory.",
+      "app_name": "Google Chrome",
+      "bundle_id": "com.google.Chrome",
+      "window_title": "Search results - YouTube",
+      "url": "https://www.youtube.com/results?search_query=screenpipe",
+      "ocr_text": null
+    },
+    {
+      "id": "navigation-home-feed",
+      "note": "Feed surface, second fixture for the same gate so its count can move visibly.",
+      "app_name": "Arc",
+      "bundle_id": "company.thebrowser.Browser",
+      "window_title": "Home feed",
+      "url": "https://social.example.com/feed",
+      "ocr_text": null
+    },
+    {
+      "id": "listing-channel-videos",
+      "note": "Listing surface: keep the URL, never the pixels.",
+      "app_name": "Google Chrome",
+      "bundle_id": "com.google.Chrome",
+      "window_title": "screen_pipe - YouTube",
+      "url": "https://www.youtube.com/@screen_pipe/videos",
+      "ocr_text": null
+    },
+    {
+      "id": "listing-forum-profile",
+      "note": "Second listing fixture, profile path form.",
+      "app_name": "Safari",
+      "bundle_id": "com.apple.Safari",
+      "window_title": "Rust users",
+      "url": "https://forum.example.com/u/ferris",
+      "ocr_text": null
+    },
+    {
+      "id": "secret-in-terminal",
+      "note": "Adversarial class: secrets. Synthetic key material, redacted at the write path rather than dropped.",
+      "app_name": "Terminal",
+      "bundle_id": "com.apple.Terminal",
+      "window_title": "zsh session",
+      "url": null,
+      "ocr_text": "deploy notes\nexport API_KEY=synthetic-not-a-real-key\nrestart the worker"
+    },
+    {
+      "id": "editor-source-file",
+      "note": "Ordinary work that must survive every gate; without stored fixtures the report cannot show a gate over-firing.",
+      "app_name": "Visual Studio Code",
+      "bundle_id": "com.microsoft.VSCode",
+      "window_title": "write_path.rs",
+      "url": null,
+      "ocr_text": "fn persist_capture() writes one record and one chunk in a single transaction"
+    },
+    {
+      "id": "docs-article",
+      "note": "Ordinary browsing that must survive admission.",
+      "app_name": "Safari",
+      "bundle_id": "com.apple.Safari",
+      "window_title": "Architecture deep dive",
+      "url": "https://docs.example.com/architecture/memory-cards",
+      "ocr_text": "The capture pipeline samples at half a frame per second"
+    },
+    {
+      "id": "mail-thread",
+      "note": "Ordinary correspondence.",
+      "app_name": "Mail",
+      "bundle_id": "com.apple.mail",
+      "window_title": "Deployment plan",
+      "url": null,
+      "ocr_text": "Please review the rollout plan before Friday"
+    },
+    {
+      "id": "chat-channel",
+      "note": "Ordinary team chat.",
+      "app_name": "Slack",
+      "bundle_id": "com.tinyspeck.slackmacgap",
+      "window_title": "team-eng channel",
+      "url": null,
+      "ocr_text": "standup notes, the dedup window is bounded"
+    }
+  ]
+}

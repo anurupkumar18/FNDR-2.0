@@ -15,33 +15,80 @@ pub enum CaptureSurfacePolicy {
     SkipFrame,
 }
 
-/// Classify a browser surface before it reaches the capture source.
+/// Which named admission rule produced a non-`Normal` classification.
+///
+/// The stable identity matters more than the outcome: two rules both mean
+/// "SkipFrame", and the replay report has to say which of them dropped a
+/// fixture. Rows in the capture gate policy table are keyed by this value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AdmissionRule {
+    /// A browser window showing its own chrome (new tab, start page).
+    GenericBrowserChrome,
+    /// A search-results or feed surface: transient navigation, not content.
+    NavigationSurface,
+    /// A profile/channel/listing page: worth the URL, not the pixels.
+    ListingSurface,
+}
+
+impl AdmissionRule {
+    /// The classification this rule produces when it matches.
+    pub fn policy(self) -> CaptureSurfacePolicy {
+        match self {
+            Self::GenericBrowserChrome | Self::NavigationSurface => CaptureSurfacePolicy::SkipFrame,
+            Self::ListingSurface => CaptureSurfacePolicy::UrlOnly,
+        }
+    }
+
+    /// Does this single rule fire for this surface? Asked one rule at a time
+    /// by the capture gate policy table, so attribution is not reconstructed
+    /// from the aggregate answer.
+    pub fn matches(self, app_name: &str, window_title: &str, url: Option<&str>) -> bool {
+        if !is_browser_app(app_name) {
+            return false;
+        }
+        let Some(url) = url else {
+            return false;
+        };
+        let title = window_title.to_ascii_lowercase();
+        match self {
+            Self::GenericBrowserChrome => is_generic_browser_chrome_title(&title),
+            Self::NavigationSurface => is_navigation_surface(&UrlSurface::from_url(url)),
+            Self::ListingSurface => is_listing_surface(&UrlSurface::from_url(url), &title),
+        }
+    }
+}
+
+/// The admission rules in evaluation order. First match wins.
+pub const ADMISSION_RULES: &[AdmissionRule] = &[
+    AdmissionRule::GenericBrowserChrome,
+    AdmissionRule::NavigationSurface,
+    AdmissionRule::ListingSurface,
+];
+
+/// Classify a browser surface before it reaches the capture source, naming
+/// the rule responsible.
 // Ported from FNDR v1 src-tauri/src/capture/admission.rs at 330a760b.
+pub fn classify_capture_surface(
+    app_name: &str,
+    window_title: &str,
+    url: Option<&str>,
+) -> (CaptureSurfacePolicy, Option<AdmissionRule>) {
+    for rule in ADMISSION_RULES {
+        if rule.matches(app_name, window_title, url) {
+            return (rule.policy(), Some(*rule));
+        }
+    }
+    (CaptureSurfacePolicy::Normal, None)
+}
+
+/// Classification without attribution, for callers that only need the
+/// outcome.
 pub fn classify_capture_surface_policy(
     app_name: &str,
     window_title: &str,
     url: Option<&str>,
 ) -> CaptureSurfacePolicy {
-    if !is_browser_app(app_name) {
-        return CaptureSurfacePolicy::Normal;
-    }
-    let Some(url) = url else {
-        return CaptureSurfacePolicy::Normal;
-    };
-
-    let title = window_title.to_ascii_lowercase();
-    if is_generic_browser_chrome_title(&title) {
-        return CaptureSurfacePolicy::SkipFrame;
-    }
-
-    let surface = UrlSurface::from_url(url);
-    if is_navigation_surface(&surface) {
-        return CaptureSurfacePolicy::SkipFrame;
-    }
-    if is_listing_surface(&surface, &title) {
-        return CaptureSurfacePolicy::UrlOnly;
-    }
-    CaptureSurfacePolicy::Normal
+    classify_capture_surface(app_name, window_title, url).0
 }
 
 fn is_browser_app(app_name: &str) -> bool {
@@ -202,6 +249,46 @@ fn is_listing_surface(surface: &UrlSurface, title: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn each_outcome_names_the_rule_that_produced_it() {
+        // Two different rules both mean SkipFrame; without the identity the
+        // replay report can only say "admission dropped it", which is the v1
+        // failure this ticket exists to prevent.
+        assert_eq!(
+            classify_capture_surface("Google Chrome", "New Tab", Some("https://example.com/")),
+            (
+                CaptureSurfacePolicy::SkipFrame,
+                Some(AdmissionRule::GenericBrowserChrome)
+            )
+        );
+        assert_eq!(
+            classify_capture_surface(
+                "Google Chrome",
+                "Search results - YouTube",
+                Some("https://www.youtube.com/results?search_query=screenpipe"),
+            ),
+            (
+                CaptureSurfacePolicy::SkipFrame,
+                Some(AdmissionRule::NavigationSurface)
+            )
+        );
+        assert_eq!(
+            classify_capture_surface(
+                "Google Chrome",
+                "screen_pipe - YouTube",
+                Some("https://www.youtube.com/@screen_pipe/videos"),
+            ),
+            (
+                CaptureSurfacePolicy::UrlOnly,
+                Some(AdmissionRule::ListingSurface)
+            )
+        );
+        assert_eq!(
+            classify_capture_surface("Finder", "Project", None),
+            (CaptureSurfacePolicy::Normal, None)
+        );
+    }
 
     #[test]
     fn skips_known_navigation_results_pages() {

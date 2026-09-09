@@ -491,6 +491,24 @@ prefix) and treat the localized name as a whole-token fallback; never
 substring-match an app name. Mozilla is the worked example for why family
 prefixes need care: `org.mozilla.` covers Thunderbird too.
 
+## 2026-09-08 · A shared cargo target dir served a stale rmeta of a just-edited crate
+Cost: two full red `make test` runs and a misdiagnosis pass, on a change
+that compiled and tested green crate-by-crate seconds earlier.
+Root cause: parallel agents in sibling worktrees share
+`CARGO_TARGET_DIR=~/.cache/cargo-target-shared`. A workspace build linked a
+`libfndr_privacy-*.rmeta` produced from a sibling tree's older copy of the
+same package name and version, so `fndr-capture` failed with "no
+`safety_rule` in the root" for a symbol that was plainly exported in this
+worktree's source. `cargo build -p fndr-capture` passed in the same minute
+because it resolved a different cached unit; the deps directory also held a
+zero-byte rmeta written mid-run.
+Rule: when a compile error names a symbol you can `grep` in your own
+`pub use`, suspect the shared target dir before your code. `touch` the
+edited crate's sources to force its rebuild, then re-run the gate. And read
+the real exit code: the harness reports the wrapper shell's status, so
+`make test > log 2>&1; echo "EXIT=$?"` and check that line, not the
+notification.
+
 <!-- Inlined from .claude/skills/fndr-feature-dev/SKILL.md -->
 
 

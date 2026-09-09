@@ -5,6 +5,10 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+# T-309: the capture gate policy table composes the safety rules directly
+# rather than restating them, so a gate cannot drift open by duplication.
+# `fndr-privacy` is a leaf crate (url parsing only, no I/O, no HTTP client).
+fndr-privacy = { path = "../fndr-privacy" }
 image = { version = "0.23", default-features = false }
 img_hash = "3.2"
 objc2-app-kit = { version = "0.3", features = ["NSRunningApplication", "NSWorkspace"] }
@@ -20,3 +24,8 @@ tracing = "0.1"
 # `macos_14_0` gates the SCScreenshotManager module; macOS 14 is where that
 # API landed, and it is the floor this provider requires.
 screencapturekit = { version = "=9.0.1", features = ["macos_14_0"] }
+# T-309 replay fixtures are checked-in JSON so a gate change is reviewed
+# against a stable, synthetic corpus. Parsing only; this crate performs no
+# file or network I/O of its own.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

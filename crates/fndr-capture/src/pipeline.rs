@@ -8,8 +8,7 @@
 use std::collections::HashMap;
 
 use crate::{
-    CaptureError, CaptureSurfacePolicy, Frame, FrameSource, PerceptualDeduper, SemanticDedupWindow,
-    classify_capture_surface_policy, semantic_signature,
+    CaptureError, Frame, FrameSource, PerceptualDeduper, SemanticDedupWindow, semantic_signature,
 };
 
 /// Foreground metadata acquired before any pixel capture.
@@ -78,16 +77,23 @@ pub trait CaptureContextSource {
     fn current_context(&self) -> Result<CaptureContext, PipelineError>;
 }
 
-/// The privacy gate which must decide before pixels are captured.
+/// The metadata-stage gate which must decide before pixels are captured.
+///
+/// Since T-309 this is the whole pre-pixel policy, privacy and browser
+/// admission alike: `CaptureGatePolicy` evaluates one declarative table and
+/// this seam reports its single terminal answer. The scheduler no longer
+/// carries an inline admission branch of its own.
 pub trait PreCaptureGate {
     fn evaluate(&self, context: &CaptureContext) -> GateDecision;
 }
 
-/// The pre-capture privacy decision, deliberately separate from the final
+/// The pre-capture decision, deliberately separate from the final
 /// persistence recheck.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GateDecision {
     Allow,
+    /// Keep the URL metadata for this surface and never capture its pixels.
+    UrlOnly,
     Skip(SkipReason),
 }
 
@@ -269,24 +275,13 @@ where
             Err(error) => return failed(SkipReason::MetadataUnavailable, error),
         };
 
-        if let GateDecision::Skip(reason) = self.gate.evaluate(&context) {
-            return CaptureTickOutcome::Skipped(reason);
-        }
-
-        // Ported classification from FNDR v1 admission.rs at 330a760b; the
-        // loop itself is a clean T-306 rewrite per ADR-005.
-        match classify_capture_surface_policy(
-            &context.app_name,
-            &context.window_title,
-            context.url.as_deref(),
-        ) {
-            CaptureSurfacePolicy::SkipFrame => {
-                return CaptureTickOutcome::Skipped(SkipReason::AdmissionPolicy);
-            }
-            CaptureSurfacePolicy::UrlOnly => {
-                return self.persist_url_only(&context);
-            }
-            CaptureSurfacePolicy::Normal => {}
+        // One table-driven decision, not a chain of inline gates. The v1
+        // capture loop's sequential `continue`s are what let a single widened
+        // gate silently swallow every frame (T-309).
+        match self.gate.evaluate(&context) {
+            GateDecision::Skip(reason) => return CaptureTickOutcome::Skipped(reason),
+            GateDecision::UrlOnly => return self.persist_url_only(&context),
+            GateDecision::Allow => {}
         }
 
         let frame = match self.frame_source.grab() {
@@ -549,20 +544,61 @@ mod tests {
 
     #[test]
     fn url_only_admission_never_grabs_pixels() {
-        let mut pipeline = pipeline(
-            context(
+        // Driven by the real policy table rather than a stubbed decision, so
+        // the admission row is proven to reach the pipeline seam.
+        let mut pipeline = CapturePipeline::new(
+            Context(context(
                 "Google Chrome",
                 "screen_pipe - YouTube",
                 Some("https://www.youtube.com/@screen_pipe/videos"),
-            ),
-            vec![],
-            GateDecision::Allow,
+            )),
+            Frames(RefCell::new(VecDeque::new())),
+            crate::PolicyGate::new(fndr_privacy::Blocklist::default()),
+            Ocr(OcrOutput {
+                text: "meaningful captured text".to_owned(),
+                confidence: 0.9,
+                block_count: 3,
+                low_signal: false,
+            }),
             Sink::default(),
+            CapturePipelineConfig::default(),
         );
 
         assert_eq!(pipeline.run_tick(), CaptureTickOutcome::UrlOnlyStored);
         assert_eq!(pipeline.sink().urls, 1);
         assert_eq!(pipeline.sink().captures, 0);
+    }
+
+    #[test]
+    fn admission_drops_are_counted_through_the_same_policy_seam() {
+        let mut pipeline = CapturePipeline::new(
+            Context(context(
+                "Google Chrome",
+                "Search results - YouTube",
+                Some("https://www.youtube.com/results?search_query=screenpipe"),
+            )),
+            Frames(RefCell::new(VecDeque::new())),
+            crate::PolicyGate::new(fndr_privacy::Blocklist::default()),
+            Ocr(OcrOutput {
+                text: "meaningful captured text".to_owned(),
+                confidence: 0.9,
+                block_count: 3,
+                low_signal: false,
+            }),
+            Sink::default(),
+            CapturePipelineConfig::default(),
+        );
+
+        assert_eq!(
+            pipeline.run_tick(),
+            CaptureTickOutcome::Skipped(SkipReason::AdmissionPolicy)
+        );
+        assert_eq!(pipeline.sink().urls, 0);
+        assert_eq!(pipeline.sink().captures, 0);
+        assert_eq!(
+            pipeline.counters().skip_count(SkipReason::AdmissionPolicy),
+            1
+        );
     }
 
     #[test]

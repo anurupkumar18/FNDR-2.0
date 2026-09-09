@@ -69,9 +69,9 @@ Module size rules (the POC anti-pattern guard): no file over ~600 lines without 
 The v1 monolith loop is replaced by a staged pipeline; each stage is a pure-ish function with its own tests, driven by a thin scheduler:
 
 1. **Sample**: adaptive FPS from input-idle signal; forced capture interval.
-2. **Gate** (pre-pixel): pause/incognito, blocklist, self-exclusion. Skips are counted per `SkipReason` (one terminal counter per tick, ported observability contract).
+2. **Gate** (pre-pixel): one declarative policy table (`fndr-capture::CaptureGatePolicy`, T-309) evaluated in order. It carries both the privacy rows (blocklist, self-exclusion, password managers, private browsing, banking, medical, authentication) and the browser-admission rows (step 4), each with a stable `GateId`. Skips are counted per `SkipReason` (one terminal counter per tick, ported observability contract); the offline replay harness reports drops per `GateId`.
 3. **Capture + dedup**: SCK frame; downscaled perceptual hash + A-B-A loop detection; semantic dedup window.
-4. **Admission**: surface policy (navigation/listing skips, url-only records).
+4. **Admission**: surface policy (navigation/listing skips, url-only records), evaluated as rows of the same step-2 table rather than as a separate inline branch.
 5. **OCR + cleanup**: Vision; `fndr-textsignal` scoring; text-volume qualification.
 6. **Synthesize**: deterministic insight derivation always; VLM synthesis when loaded and pressure allows (via the model-worker queue); grounding validation; merge/continuity against recent records.
 7. **Safety gate**: Allow/Redact/SkipStorage on the assembled record (last line of defense before persistence).

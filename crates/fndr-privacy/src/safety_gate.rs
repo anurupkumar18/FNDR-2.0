@@ -161,16 +161,168 @@ impl Default for SensitiveContextPolicy {
     }
 }
 
+/// What a matching rule does to the capture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SafetyAction {
+    Skip,
+    Redact,
+}
+
+/// One row of the safety policy table.
+///
+/// The table, not a chain of inline `if ... return`, is the source of truth
+/// for the order the rules run in and for what each one does. Every row
+/// carries a stable [`SafetyReason`] identity, so a composing policy (the
+/// capture gate table in `fndr-capture`, and its replay harness) can
+/// attribute a drop to the exact rule that produced it. The v1 equivalent
+/// was a sequential chain whose individual links reported nothing.
+#[derive(Clone, Copy)]
+pub struct SafetyRule {
+    pub reason: SafetyReason,
+    pub action: SafetyAction,
+    matches: fn(&RuleInput<'_>) -> bool,
+}
+
+impl SafetyRule {
+    /// Does this one rule fire for this context? Exposed so a composing
+    /// policy table can evaluate a single named rule without re-deriving its
+    /// predicate: a duplicated gate is a gate that drifts open.
+    pub fn matches(
+        &self,
+        context: SafetyContext<'_>,
+        blocklist: &Blocklist,
+        policy: &SensitiveContextPolicy,
+    ) -> bool {
+        (self.matches)(&RuleInput::new(context, blocklist, policy))
+    }
+}
+
+impl std::fmt::Debug for SafetyRule {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SafetyRule")
+            .field("reason", &self.reason)
+            .field("action", &self.action)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Inputs normalized once for every rule, so no row invents its own casing
+/// or URL-parsing contract.
+struct RuleInput<'a> {
+    app: String,
+    title: String,
+    url: &'a str,
+    url_lower: String,
+    bundle_id: Option<&'a str>,
+    ocr_text: Option<&'a str>,
+    blocklist: &'a Blocklist,
+    policy: &'a SensitiveContextPolicy,
+}
+
+impl<'a> RuleInput<'a> {
+    fn new(
+        context: SafetyContext<'a>,
+        blocklist: &'a Blocklist,
+        policy: &'a SensitiveContextPolicy,
+    ) -> Self {
+        let url = context.url.unwrap_or("");
+        Self {
+            app: context.app_name.unwrap_or("").to_ascii_lowercase(),
+            title: context.window_title.unwrap_or("").to_ascii_lowercase(),
+            url,
+            url_lower: url.to_ascii_lowercase(),
+            bundle_id: context.bundle_id,
+            ocr_text: context.ocr_text,
+            blocklist,
+            policy,
+        }
+    }
+}
+
+/// The safety policy table, in evaluation order. First match wins; anything
+/// reaching the end is allowed. Changing policy means changing this table or
+/// the [`SensitiveContextPolicy`] data its rows read, never adding a new
+/// inline branch to the evaluator.
+pub const SAFETY_RULES: &[SafetyRule] = &[
+    SafetyRule {
+        reason: SafetyReason::UserBlocklist,
+        action: SafetyAction::Skip,
+        matches: |i| i.blocklist.blocks_app(&i.app) || i.blocklist.blocks_url(i.url),
+    },
+    SafetyRule {
+        reason: SafetyReason::FndrSelfCapture,
+        action: SafetyAction::Skip,
+        matches: |i| {
+            i.bundle_id.is_some_and(|bundle_id| {
+                let bundle_id = bundle_id.to_ascii_lowercase();
+                (bundle_id.starts_with("com.fndr") || bundle_id.contains(".fndr."))
+                    && !i.app.contains("fndr meeting")
+            })
+        },
+    },
+    SafetyRule {
+        reason: SafetyReason::PasswordManager,
+        action: SafetyAction::Skip,
+        matches: |i| {
+            i.policy
+                .password_manager_names
+                .iter()
+                .any(|name| i.app.contains(name.as_str()))
+        },
+    },
+    SafetyRule {
+        reason: SafetyReason::PrivateBrowsing,
+        action: SafetyAction::Skip,
+        matches: |i| {
+            i.title.contains("incognito")
+                || (i.title.contains("private")
+                    && (i.title.contains("browsing") || i.title.contains("window")))
+        },
+    },
+    SafetyRule {
+        reason: SafetyReason::FinancialSite,
+        action: SafetyAction::Skip,
+        matches: |i| matches_domain_suffix(i.url, &i.policy.financial_domains),
+    },
+    SafetyRule {
+        reason: SafetyReason::MedicalSite,
+        action: SafetyAction::Skip,
+        matches: |i| matches_domain_label(i.url, &i.policy.medical_domain_markers),
+    },
+    SafetyRule {
+        reason: SafetyReason::Authentication,
+        action: SafetyAction::Skip,
+        matches: |i| {
+            i.policy
+                .auth_indicators
+                .iter()
+                .any(|indicator| i.title.contains(indicator) || i.url_lower.contains(indicator))
+        },
+    },
+    SafetyRule {
+        reason: SafetyReason::SecretPattern,
+        action: SafetyAction::Redact,
+        matches: |i| {
+            i.ocr_text
+                .is_some_and(|text| contains_secret_pattern(text, &i.policy.secret_patterns))
+        },
+    },
+];
+
+/// The process-wide default sensitive-context lists, built once from the
+/// compiled-in constants.
+pub fn default_sensitive_context_policy() -> &'static SensitiveContextPolicy {
+    static DEFAULT: std::sync::OnceLock<SensitiveContextPolicy> = std::sync::OnceLock::new();
+    DEFAULT.get_or_init(SensitiveContextPolicy::default)
+}
+
+/// Look up one table row by its stable reason identity.
+pub fn safety_rule(reason: SafetyReason) -> Option<&'static SafetyRule> {
+    SAFETY_RULES.iter().find(|rule| rule.reason == reason)
+}
+
 pub fn evaluate(context: SafetyContext<'_>, blocklist: &Blocklist) -> SafetyDecision {
-    evaluate_core(
-        context,
-        blocklist,
-        PASSWORD_MANAGER_NAMES,
-        FINANCIAL_DOMAINS,
-        MEDICAL_DOMAIN_MARKERS,
-        AUTH_INDICATORS,
-        SECRET_PATTERNS,
-    )
+    evaluate_with_policy(context, blocklist, default_sensitive_context_policy())
 }
 
 /// Same policy, with the built-in sensitive-context lists replaced by an
@@ -181,78 +333,15 @@ pub fn evaluate_with_policy(
     blocklist: &Blocklist,
     policy: &SensitiveContextPolicy,
 ) -> SafetyDecision {
-    evaluate_core(
-        context,
-        blocklist,
-        &policy.password_manager_names,
-        &policy.financial_domains,
-        &policy.medical_domain_markers,
-        &policy.auth_indicators,
-        &policy.secret_patterns,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-fn evaluate_core<S: AsRef<str>>(
-    context: SafetyContext<'_>,
-    blocklist: &Blocklist,
-    password_manager_names: &[S],
-    financial_domains: &[S],
-    medical_domain_markers: &[S],
-    auth_indicators: &[S],
-    secret_patterns: &[S],
-) -> SafetyDecision {
-    let app = context.app_name.unwrap_or("").to_ascii_lowercase();
-    let title = context.window_title.unwrap_or("").to_ascii_lowercase();
-    let url = context.url.unwrap_or("");
-    let url_lower = url.to_ascii_lowercase();
-
-    if blocklist.blocks_app(&app) || blocklist.blocks_url(url) {
-        return SafetyDecision::SkipStorage(SafetyReason::UserBlocklist);
+    let input = RuleInput::new(context, blocklist, policy);
+    for rule in SAFETY_RULES {
+        if (rule.matches)(&input) {
+            return match rule.action {
+                SafetyAction::Skip => SafetyDecision::SkipStorage(rule.reason),
+                SafetyAction::Redact => SafetyDecision::Redact(rule.reason),
+            };
+        }
     }
-
-    if context.bundle_id.is_some_and(|bundle_id| {
-        let bundle_id = bundle_id.to_ascii_lowercase();
-        (bundle_id.starts_with("com.fndr") || bundle_id.contains(".fndr."))
-            && !app.contains("fndr meeting")
-    }) {
-        return SafetyDecision::SkipStorage(SafetyReason::FndrSelfCapture);
-    }
-
-    if password_manager_names
-        .iter()
-        .any(|name| app.contains(name.as_ref()))
-    {
-        return SafetyDecision::SkipStorage(SafetyReason::PasswordManager);
-    }
-
-    if title.contains("incognito")
-        || (title.contains("private") && (title.contains("browsing") || title.contains("window")))
-    {
-        return SafetyDecision::SkipStorage(SafetyReason::PrivateBrowsing);
-    }
-
-    if matches_domain_suffix(url, financial_domains) {
-        return SafetyDecision::SkipStorage(SafetyReason::FinancialSite);
-    }
-
-    if matches_domain_label(url, medical_domain_markers) {
-        return SafetyDecision::SkipStorage(SafetyReason::MedicalSite);
-    }
-
-    if auth_indicators.iter().any(|indicator| {
-        title.contains(indicator.as_ref()) || url_lower.contains(indicator.as_ref())
-    }) {
-        return SafetyDecision::SkipStorage(SafetyReason::Authentication);
-    }
-
-    if context
-        .ocr_text
-        .is_some_and(|text| contains_secret_pattern(text, secret_patterns))
-    {
-        return SafetyDecision::Redact(SafetyReason::SecretPattern);
-    }
-
     SafetyDecision::Allow
 }
 
@@ -328,6 +417,55 @@ mod tests {
             window_title,
             ocr_text,
         }
+    }
+
+    #[test]
+    fn the_policy_table_order_is_the_contract_not_an_accident() {
+        // Reordering these rows changes which reason an owner is shown for a
+        // context that matches two of them, and reordering silently is how a
+        // gate stops covering what its name claims. The table is asserted
+        // whole so a reorder or a deletion is a deliberate, reviewed edit.
+        assert_eq!(
+            SAFETY_RULES
+                .iter()
+                .map(|rule| (rule.reason, rule.action))
+                .collect::<Vec<_>>(),
+            vec![
+                (SafetyReason::UserBlocklist, SafetyAction::Skip),
+                (SafetyReason::FndrSelfCapture, SafetyAction::Skip),
+                (SafetyReason::PasswordManager, SafetyAction::Skip),
+                (SafetyReason::PrivateBrowsing, SafetyAction::Skip),
+                (SafetyReason::FinancialSite, SafetyAction::Skip),
+                (SafetyReason::MedicalSite, SafetyAction::Skip),
+                (SafetyReason::Authentication, SafetyAction::Skip),
+                (SafetyReason::SecretPattern, SafetyAction::Redact),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_single_rule_can_be_asked_in_isolation_and_agrees_with_the_table() {
+        // The capture gate table composes these rows one at a time; if the
+        // isolated answer diverged from the whole-table answer, per-gate
+        // attribution in the replay report would be fiction.
+        let blocklist = Blocklist::default();
+        let policy = default_sensitive_context_policy();
+        let ctx = context(Some("1Password"), None, None, Some("Vault"), None);
+
+        assert!(
+            safety_rule(SafetyReason::PasswordManager)
+                .unwrap()
+                .matches(ctx, &blocklist, policy)
+        );
+        assert!(
+            !safety_rule(SafetyReason::FinancialSite)
+                .unwrap()
+                .matches(ctx, &blocklist, policy)
+        );
+        assert_eq!(
+            evaluate(ctx, &blocklist),
+            SafetyDecision::SkipStorage(SafetyReason::PasswordManager)
+        );
     }
 
     #[test]
