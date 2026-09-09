@@ -22,6 +22,13 @@ if rg -n -e "$color_literal_pattern" crates/fndr-shell/ui/app.css crates/fndr-sh
   exit 1
 fi
 
+# T-1001: the new React app gets the same token discipline as the trust
+# window -- every color a semantic role, never a literal in component CSS.
+if rg -n -e "$color_literal_pattern" ui/src --glob '*.css' 2>/dev/null; then
+  echo "FAIL: raw color literal in ui/src. Add a token to crates/fndr-shell/ui/tokens.css instead." >&2
+  exit 1
+fi
+
 # T-1406: every button is one of the defined component variants, not an
 # ad-hoc inline-styled control -- that is how three panels end up with three
 # different-looking buttons.
