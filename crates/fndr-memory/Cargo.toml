@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 fndr-privacy = { path = "../fndr-privacy" }
 fndr-store = { path = "../fndr-store" }
+fndr-textsignal = { path = "../fndr-textsignal" }
 
 [dev-dependencies]
 fndr-inference = { path = "../fndr-inference" }

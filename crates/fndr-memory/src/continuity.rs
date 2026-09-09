@@ -279,7 +279,10 @@ fn effective_url(url: &str) -> String {
         .to_owned()
 }
 
-fn domain(url: Option<&str>) -> Option<String> {
+/// Exposed crate-wide so other ported v1 heuristics (insight/fusion) reuse
+/// this credential/query/fragment-safe parser instead of the plainer
+/// `extract_domain` v1 duplicated in `capture/mod.rs`.
+pub(crate) fn domain(url: Option<&str>) -> Option<String> {
     let url = url?.trim();
     let after_scheme = url.split_once("://").map(|(_, rest)| rest).unwrap_or(url);
     let authority = after_scheme.split(['/', '?', '#']).next()?.trim();
