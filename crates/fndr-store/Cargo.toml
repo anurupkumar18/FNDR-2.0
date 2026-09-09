@@ -4,11 +4,22 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+# T-209's owner-facing backup, export, and restore CLI. Named here rather
+# than left to src/bin auto-discovery so the binary is greppable from the
+# manifest.
+[[bin]]
+name = "fndr-vault"
+path = "src/bin/fndr-vault.rs"
+
 [dependencies]
 fndr-inference = { path = "../fndr-inference" }
 fndr-privacy = { path = "../fndr-privacy" }
 rusqlite = { version = "0.40", features = ["bundled"] }
 thiserror = "2"
+# Backup manifests and the JSONL export. Escaping arbitrary capture text by
+# hand is a correctness risk; serde_json is already the workspace's JSON
+# convention (fndr-mcp, fndr-bench) and adds no egress.
+serde_json = "1"
 # Exact pin per ADR-002 amendment: fast release cadence, no 1.0.
 lancedb = "=0.37.1"
 arrow-array = "58"

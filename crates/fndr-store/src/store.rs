@@ -260,10 +260,10 @@ impl Store {
             .query_row("PRAGMA user_version", [], |r| r.get(0))?)
     }
 
-    /// Test access. Domain modules built on this store (T-202+) get their own
-    /// crate-internal accessor when they exist; until then this stays
-    /// test-only rather than shipping unused scaffolding.
-    #[cfg(test)]
+    /// Crate-internal connection access for domain modules that speak SQL the
+    /// typed API does not cover: `backup` (snapshot and integrity check) and
+    /// `export` (one read transaction across several statements). It stays
+    /// `pub(crate)`: nothing outside this crate gets a raw connection.
     pub(crate) fn conn(&self) -> &Connection {
         &self.conn
     }
