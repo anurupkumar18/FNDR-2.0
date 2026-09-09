@@ -20,6 +20,16 @@
         "minWidth": 520,
         "minHeight": 420,
         "resizable": true
+      },
+      {
+        "label": "workspace",
+        "title": "FNDR",
+        "url": "workspace/index.html",
+        "width": 1080,
+        "height": 720,
+        "minWidth": 860,
+        "minHeight": 560,
+        "resizable": true
       }
     ]
   },
