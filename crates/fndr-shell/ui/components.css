@@ -59,9 +59,9 @@
   font-weight: var(--font-weight-semibold);
 }
 
-/* Button: one base, two roles. Primary is the single deliberate action per
- * screen (Start capture); everything else is secondary. Nothing gets an
- * ad-hoc inline style. */
+/* Button: one base, two roles. Primary is the single deliberate action of a
+ * panel (Search in the memory panel, Start capture in the capture panel);
+ * everything else is secondary. Nothing gets an ad-hoc inline style. */
 .btn {
   display: inline-flex;
   align-items: center;
@@ -177,6 +177,50 @@
   line-height: var(--line-height-normal);
 }
 
+/* Field: the one text-entry treatment (the search box). Its own control sits
+ * on the page background rather than the panel surface, so the one place a
+ * person types is the one place that reads as an opening in the card. */
+.field {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-4);
+}
+
+.field .btn {
+  /* The base button carries its own stack spacing; inside the field row the
+   * flex gap owns spacing instead, so the control aligns with the input. */
+  margin: 0;
+}
+
+.input {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: 1px solid var(--color-surface-border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-3) var(--space-4);
+  background: var(--color-bg);
+  color: var(--color-text-primary);
+  font: inherit;
+  font-size: var(--font-size-body);
+  transition: border-color var(--motion-fast) var(--easing-standard);
+}
+
+.input::placeholder {
+  color: var(--color-text-tertiary);
+}
+
+.input:focus-visible {
+  outline: none;
+  border-color: var(--color-accent);
+  box-shadow: var(--shadow-focus);
+}
+
+.input:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
 /* List: the audit-entry rows — a plain, dividing-line list, reusable for
  * any future "recent items" surface. */
 .list {
@@ -193,4 +237,47 @@
   color: var(--color-text-secondary);
   font-size: var(--font-size-body);
   line-height: var(--line-height-normal);
+}
+
+/* Result rows are two-line (the remembered text, then the signals that let a
+ * person judge it), so they need more room between them than one-line audit
+ * rows. Same list, one spacing modifier, not a second list treatment. */
+.list-results {
+  gap: var(--space-5);
+}
+
+.list-item .result-snippet {
+  margin: 0;
+  color: var(--color-text-primary);
+  font-size: var(--font-size-body);
+  line-height: var(--line-height-normal);
+}
+
+/* The matched terms SQLite marks in a keyword snippet. Vector-route snippets
+ * carry no marks, so a highlight is itself an honest route signal. */
+.list-item mark {
+  border-radius: var(--radius-sm);
+  padding: 0 var(--space-1);
+  background: var(--color-status-running-bg);
+  color: var(--color-status-running-fg);
+}
+
+/* Where each result came from: route, app, and capture time. */
+.list-item .result-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+  color: var(--color-text-tertiary);
+  font-size: var(--font-size-caption);
+}
+
+/* The route banner: one pill plus one sentence saying which routes actually
+ * ran. It is never hidden on a degraded search — that is the whole point. */
+.route-note {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
 }

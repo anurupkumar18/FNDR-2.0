@@ -46,6 +46,18 @@ header .lede {
   line-height: var(--line-height-normal);
 }
 
+/* Labels that a screen reader needs and the layout does not. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
 @media (max-width: 580px) {
   main {
     padding: var(--space-8) var(--space-4);
