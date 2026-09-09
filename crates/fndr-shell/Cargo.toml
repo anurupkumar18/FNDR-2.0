@@ -11,6 +11,7 @@ fndr-inference = { path = "../fndr-inference" }
 fndr-memory = { path = "../fndr-memory" }
 fndr-ocr = { path = "../fndr-ocr" }
 fndr-privacy = { path = "../fndr-privacy" }
+fndr-retrieval = { path = "../fndr-retrieval" }
 fndr-store = { path = "../fndr-store" }
 fndr-types = { path = "../fndr-types" }
 core-graphics = "=0.25.0"
@@ -25,6 +26,11 @@ specta-typescript = "=0.0.12"
 tauri-specta = { version = "=2.0.0-rc.25", features = ["derive", "typescript"] }
 thiserror = "2"
 libc = "0.2"
+
+[dev-dependencies]
+# Search's vector route is async (embed plus Lance I/O), so its tests need a
+# runtime. Matches fndr-retrieval's dev-dependency on the same routes.
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 
 [build-dependencies]
 tauri-build = { version = "=2.6.3", features = ["codegen"] }

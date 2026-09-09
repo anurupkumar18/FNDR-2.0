@@ -202,6 +202,20 @@ fn doctor_with_screen_recording_preflight(
     }
 }
 
+/// Where the local embedding model lives for a given data directory, honoring
+/// an explicit `--model` override.
+///
+/// Capture writes the vector index and search reads it, so both must resolve
+/// the same file: a divergence here would mean searching an index built by a
+/// different model, which fails as a dimension mismatch at best and as quietly
+/// wrong neighbors at worst.
+pub fn resolved_model_path(data_dir: &Path, model_override: Option<&Path>) -> PathBuf {
+    model_override.map_or_else(
+        || data_dir.join("models").join(MODELS[0].filename),
+        Path::to_path_buf,
+    )
+}
+
 /// The owner-facing audit viewer reads only a bounded, existing SQLite vault.
 /// Unlike `Store::open`, this path cannot create the database or apply a
 /// migration. An absent vault truthfully means there is no local MCP activity
@@ -287,9 +301,7 @@ impl ShellCaptureState {
             .instance_lock
             .lock()
             .expect("shell instance lock mutex is not poisoned") = Some(instance_lock);
-        let model_path = options
-            .model_path
-            .unwrap_or_else(|| data_dir.join("models").join(MODELS[0].filename));
+        let model_path = resolved_model_path(&data_dir, options.model_path.as_deref());
         let sink: Arc<dyn CaptureStatusSink> = Arc::new(TauriCaptureStatusSink {
             app: app.clone(),
             status: Arc::clone(&self.status),

@@ -13,8 +13,37 @@
       <header>
         <p class="eyebrow">LOCAL-FIRST SCREEN MEMORY</p>
         <h1>FNDR</h1>
-        <p class="lede">A small, inspectable desktop host for your local capture engine.</p>
+        <p class="lede">Search what your machine has seen, and inspect exactly what it is doing.</p>
       </header>
+
+      <section class="panel" aria-labelledby="search-heading">
+        <p class="eyebrow">YOUR MEMORY</p>
+        <h2 id="search-heading">Search what FNDR has captured.</h2>
+        <p>
+          Every result below was read on this machine and never left it. FNDR searches two
+          local routes: exact keyword matches, and semantic matches when a local embedding
+          model is installed. Each result says which route found it.
+        </p>
+        <form id="search-form" class="field" role="search">
+          <label class="visually-hidden" for="search-query">Search your memories</label>
+          <input
+            id="search-query"
+            class="input"
+            type="search"
+            name="query"
+            placeholder="What are you trying to find?"
+            autocomplete="off"
+            spellcheck="false"
+            disabled
+          />
+          <button id="run-search" class="btn btn-primary" type="submit" disabled>Search</button>
+        </form>
+        <p id="search-detail" aria-live="polite">
+          FNDR searches only what it has already stored locally.
+        </p>
+        <p id="search-route" class="route-note" hidden></p>
+        <ul id="search-results" class="list list-results" hidden></ul>
+      </section>
 
       <section class="panel" aria-labelledby="capture-heading">
         <div class="panel-header">

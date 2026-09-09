@@ -9,6 +9,41 @@ const openAuditLogElement = document.querySelector("#open-audit-log");
 const auditDetailElement = document.querySelector("#audit-detail");
 const auditEntriesElement = document.querySelector("#audit-entries");
 const screenRecordingAccessElement = document.querySelector("#screen-recording-access");
+const searchFormElement = document.querySelector("#search-form");
+const searchQueryElement = document.querySelector("#search-query");
+const runSearchElement = document.querySelector("#run-search");
+const searchDetailElement = document.querySelector("#search-detail");
+const searchRouteElement = document.querySelector("#search-route");
+const searchResultsElement = document.querySelector("#search-results");
+
+/* What each VectorRouteState means for the person reading the results. A
+ * keyword-only answer is never presented as the whole answer: every state
+ * below renders, including the healthy one. */
+const VECTOR_ROUTE_NOTES = {
+  available: {
+    state: "running",
+    label: "Keyword + semantic",
+    detail: "Both local retrieval routes ran for this query.",
+  },
+  model_missing: {
+    state: "blocked",
+    label: "Keyword only",
+    detail:
+      "No local embedding model is installed, so semantic matches were not searched. These are exact-text matches only.",
+  },
+  index_missing: {
+    state: "blocked",
+    label: "Keyword only",
+    detail:
+      "The semantic index does not exist yet; it is built the first time capture flushes what it has stored. These are exact-text matches only.",
+  },
+  failed: {
+    state: "failed",
+    label: "Keyword only",
+    detail:
+      "The semantic route failed on this query and FNDR logged the reason locally. These are exact-text matches only.",
+  },
+};
 
 function words(value) {
   return String(value || "unknown").replaceAll("_", " ");
