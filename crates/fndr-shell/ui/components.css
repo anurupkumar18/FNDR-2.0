@@ -281,3 +281,26 @@
   flex-wrap: wrap;
   gap: var(--space-2);
 }
+
+/* Search field: a native-feeling search input, not a generic text box. */
+.search-field {
+  display: block;
+  width: 100%;
+  margin-top: var(--space-4);
+  border: 1px solid var(--color-surface-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-secondary);
+  padding: var(--space-3) var(--space-4);
+  font: inherit;
+  font-size: var(--font-size-body);
+  color: var(--color-text-primary);
+}
+
+.search-field::placeholder {
+  color: var(--color-text-tertiary);
+}
+
+.search-field:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus);
+}
