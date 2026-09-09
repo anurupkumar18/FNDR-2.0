@@ -61,6 +61,10 @@ pub enum SkipReason {
     PerceptualDuplicate,
     MissingPerceptualSignature,
     LowSignal,
+    /// OCR returned text and text cleanup classified every line of it as
+    /// chrome or noise. Distinct from `LowSignal` so a capture emptied by our
+    /// own cleanup is never mistaken for a screen Vision could not read.
+    CleanupRemovedAllText,
     SemanticDuplicate,
     FinalPrivacy,
     /// Screen Recording is unavailable or the macOS capture boundary failed
@@ -91,10 +95,30 @@ pub enum GateDecision {
     Skip(SkipReason),
 }
 
+/// What text cleanup did to this frame's recognized text.
+///
+/// Cleanup removing every line is a real, expected outcome (a browser frame
+/// that is nothing but tab strip and toolbar), not a failure. It gets its own
+/// discriminant so the scheduler can count it separately instead of an
+/// implementation quietly substituting the raw text it was asked to clean.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextCleanupOutcome {
+    /// Cleanup kept content-bearing text. It may be byte-identical to the raw
+    /// recognized text when there was nothing to remove.
+    Cleaned,
+    /// The recognizer itself produced no text, so there was nothing to clean.
+    NothingToClean,
+    /// The recognizer produced text and cleanup classified all of it as chrome
+    /// or noise.
+    RemovedAllText,
+}
+
 /// Normalized OCR output used by the scheduler's low-signal and semantic
 /// stages. The Vision adapter converts its richer result into this value.
 #[derive(Debug, Clone, PartialEq)]
 pub struct OcrOutput {
+    /// Cleaned text: what the pipeline will store and what the owner will
+    /// eventually read. Never the recognizer's raw output.
     pub text: String,
     pub confidence: f32,
     pub block_count: usize,
@@ -102,11 +126,26 @@ pub struct OcrOutput {
     /// Keeping that rule at the Vision boundary avoids a second, drift-prone
     /// interpretation of OCR quality in the scheduler.
     pub low_signal: bool,
+    /// How `text` relates to the recognizer's raw output. Reported so an
+    /// emptied frame is a named terminal state rather than an anonymous
+    /// low-signal skip.
+    pub cleanup: TextCleanupOutcome,
 }
 
 /// The OCR boundary; implementations must return cleaned, not raw, text.
+///
+/// `context` is supplied because cleanup is app-aware: dropping browser chrome
+/// without knowing the app either misses tab strips or eats terminal output.
+/// An implementation that cannot see the foreground app cannot honor the
+/// "cleaned, not raw" half of this contract, which is why the app context is
+/// part of the signature rather than something the adapter has to guess.
 pub trait OcrRecognizer {
-    fn recognize(&self, png: &[u8], min_chars: usize) -> Result<OcrOutput, PipelineError>;
+    fn recognize(
+        &self,
+        context: &CaptureContext,
+        png: &[u8],
+        min_chars: usize,
+    ) -> Result<OcrOutput, PipelineError>;
 }
 
 /// The result from the final persistence boundary.
@@ -295,12 +334,20 @@ where
             return CaptureTickOutcome::Skipped(SkipReason::PerceptualDuplicate);
         }
 
-        let ocr = match self.ocr.recognize(&frame.png, self.config.min_ocr_chars) {
+        let ocr = match self
+            .ocr
+            .recognize(&context, &frame.png, self.config.min_ocr_chars)
+        {
             Ok(ocr) => ocr,
             Err(error) => return failed(SkipReason::OcrFailed, error),
         };
         if ocr.low_signal {
-            return CaptureTickOutcome::Skipped(SkipReason::LowSignal);
+            return CaptureTickOutcome::Skipped(match ocr.cleanup {
+                TextCleanupOutcome::RemovedAllText => SkipReason::CleanupRemovedAllText,
+                TextCleanupOutcome::Cleaned | TextCleanupOutcome::NothingToClean => {
+                    SkipReason::LowSignal
+                }
+            });
         }
 
         let signature = semantic_signature(&context.app_name, &context.window_title, &ocr.text);
@@ -394,7 +441,12 @@ mod tests {
     struct Ocr(OcrOutput);
 
     impl OcrRecognizer for Ocr {
-        fn recognize(&self, _png: &[u8], _min_chars: usize) -> Result<OcrOutput, PipelineError> {
+        fn recognize(
+            &self,
+            _context: &CaptureContext,
+            _png: &[u8],
+            _min_chars: usize,
+        ) -> Result<OcrOutput, PipelineError> {
             Ok(self.0.clone())
         }
     }
@@ -468,6 +520,7 @@ mod tests {
                 confidence: 0.9,
                 block_count: 3,
                 low_signal: false,
+                cleanup: TextCleanupOutcome::Cleaned,
             }),
             sink,
             CapturePipelineConfig::default(),
@@ -541,6 +594,7 @@ mod tests {
                 confidence: 0.0,
                 block_count: 0,
                 low_signal: true,
+                cleanup: TextCleanupOutcome::NothingToClean,
             }),
             Sink::default(),
             CapturePipelineConfig::default(),
@@ -579,6 +633,7 @@ mod tests {
                 confidence: 0.9,
                 block_count: 2,
                 low_signal: true,
+                cleanup: TextCleanupOutcome::Cleaned,
             }),
             Sink::default(),
             CapturePipelineConfig::default(),
@@ -589,6 +644,82 @@ mod tests {
             CaptureTickOutcome::Skipped(SkipReason::LowSignal)
         );
         assert_eq!(pipeline.sink().captures, 0);
+    }
+
+    #[test]
+    fn cleanup_emptying_a_frame_is_its_own_terminal_reason() {
+        // A browser frame that OCRs to nothing but chrome must not be filed
+        // under `LowSignal`: Vision read the screen fine, our cleanup is what
+        // removed every line. Collapsing the two hides cleanup miscalibration.
+        let mut pipeline = CapturePipeline::new(
+            Context(context("Google Chrome", "New Tab", None)),
+            Frames(RefCell::new(
+                vec![frame(Some(signature([0, 0, 0])), 1_000)].into(),
+            )),
+            Gate(GateDecision::Allow),
+            Ocr(OcrOutput {
+                text: String::new(),
+                confidence: 0.50,
+                block_count: 6,
+                low_signal: true,
+                cleanup: TextCleanupOutcome::RemovedAllText,
+            }),
+            Sink::default(),
+            CapturePipelineConfig::default(),
+        );
+
+        assert_eq!(
+            pipeline.run_tick(),
+            CaptureTickOutcome::Skipped(SkipReason::CleanupRemovedAllText)
+        );
+        assert_eq!(pipeline.counters().skip_count(SkipReason::LowSignal), 0);
+        assert_eq!(
+            pipeline
+                .counters()
+                .skip_count(SkipReason::CleanupRemovedAllText),
+            1
+        );
+        assert_eq!(pipeline.sink().captures, 0);
+    }
+
+    #[test]
+    fn recognizer_receives_the_foreground_context_it_needs_to_clean() {
+        // The contract says implementations return cleaned text, and cleanup is
+        // app-aware. Pin that the pipeline actually hands the app over, so the
+        // adapter can never be forced back onto a context-free cleanup path.
+        struct ContextCapturingOcr(RefCell<Vec<String>>);
+
+        impl OcrRecognizer for ContextCapturingOcr {
+            fn recognize(
+                &self,
+                context: &CaptureContext,
+                _png: &[u8],
+                _min_chars: usize,
+            ) -> Result<OcrOutput, PipelineError> {
+                self.0.borrow_mut().push(context.app_name.clone());
+                Ok(OcrOutput {
+                    text: "meaningful captured text".to_owned(),
+                    confidence: 0.50,
+                    block_count: 3,
+                    low_signal: false,
+                    cleanup: TextCleanupOutcome::Cleaned,
+                })
+            }
+        }
+
+        let mut pipeline = CapturePipeline::new(
+            Context(context("Terminal", "zsh", None)),
+            Frames(RefCell::new(
+                vec![frame(Some(signature([0, 0, 0])), 1_000)].into(),
+            )),
+            Gate(GateDecision::Allow),
+            ContextCapturingOcr(RefCell::new(Vec::new())),
+            Sink::default(),
+            CapturePipelineConfig::default(),
+        );
+
+        assert_eq!(pipeline.run_tick(), CaptureTickOutcome::Stored);
+        assert_eq!(pipeline.ocr.0.borrow().as_slice(), ["Terminal"]);
     }
 
     #[test]

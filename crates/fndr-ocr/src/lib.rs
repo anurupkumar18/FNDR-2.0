@@ -3,5 +3,6 @@
 mod vision;
 
 pub use vision::{
-    OcrAggregateStats, OcrConfig, OcrEngine, OcrError, RecognizedText, text_volume_qualifies,
+    OcrAggregateStats, OcrConfig, OcrEngine, OcrError, RecognizedText, preprocess_ocr_for_qwen,
+    text_volume_qualifies,
 };

@@ -274,7 +274,7 @@ mod tests {
 
     use fndr_capture::{
         CaptureContext, CaptureContextSource, Frame, GateDecision, OcrOutput, PerceptualSignature,
-        PipelineError,
+        PipelineError, TextCleanupOutcome,
     };
     use fndr_inference::{EmbedError, Embedder, EmbeddingSpec};
 
@@ -322,12 +322,18 @@ mod tests {
     struct Ocr;
 
     impl OcrRecognizer for Ocr {
-        fn recognize(&self, _png: &[u8], _min_chars: usize) -> Result<OcrOutput, PipelineError> {
+        fn recognize(
+            &self,
+            _context: &CaptureContext,
+            _png: &[u8],
+            _min_chars: usize,
+        ) -> Result<OcrOutput, PipelineError> {
             Ok(OcrOutput {
                 text: "scheduler writes durable truth".to_owned(),
                 confidence: 0.9,
                 block_count: 2,
                 low_signal: false,
+                cleanup: TextCleanupOutcome::Cleaned,
             })
         }
     }

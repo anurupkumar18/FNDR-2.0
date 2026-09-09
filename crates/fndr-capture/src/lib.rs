@@ -18,7 +18,7 @@ pub use foreground::MacOSForegroundContextSource;
 pub use pipeline::{
     CaptureContext, CaptureContextSource, CaptureCounters, CapturePipeline, CapturePipelineConfig,
     CaptureSink, CaptureStage, CaptureTickOutcome, GateDecision, OcrOutput, OcrRecognizer,
-    PersistenceOutcome, PipelineError, PreCaptureGate, SkipReason,
+    PersistenceOutcome, PipelineError, PreCaptureGate, SkipReason, TextCleanupOutcome,
 };
 pub use sampling::{InputIdleSource, MacOSInputIdle, SamplingDecision, SamplingPolicy};
 pub use source::{

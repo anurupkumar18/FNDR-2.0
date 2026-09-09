@@ -134,6 +134,43 @@ Rule: when adding the first runnable Tauri binary, add the pinned
 `tauri.conf.json`, and the product icon in the same slice; compile the binary
 as part of the focused gate before claiming the shell is runnable.
 
+## 2026-09-07 · A ported crate sat unconsumed for 17 days behind a "Done" row
+Cost: every capture stored since T-306 went to disk with the internal
+`[LOW_CONF] ` marker on nearly every line and with browser chrome unreduced.
+Caught only when a search UI was about to render that text to the owner.
+Root cause: `fndr-textsignal` was ported with 15 green tests and marked Done,
+but nothing ever added the dependency. `grep -rln "fndr-textsignal"
+crates/*/Cargo.toml` matched one file: its own manifest. Its only caller was
+its own `#[cfg(test)]` module, which is exactly the "dead plumbing" failure
+this repo audits v1 for. The consuming trait even documented the contract
+(`OcrRecognizer`: "implementations must return cleaned, not raw, text") while
+the sole production implementation passed raw text through; a prose contract
+with no test behind it is decoration.
+Rule: a crate, port, or module is not Done until a non-test caller on the
+live path consumes it. Before marking any ticket Done, run `grep -rln
+"<crate-name>" crates/*/Cargo.toml` (or the equivalent for the artifact type)
+and confirm at least one consumer that is not itself. Pair every "must return
+X" trait comment with a test that fails when an implementation returns
+not-X. Same shape as the 2026-08-21 migration lesson: creating the artifact
+is not registering it.
+
+## 2026-09-07 · Cleanup that shrinks text also moves the quality gate
+Cost: no bug, an avoidable one. Wiring OCR cleanup in changes the character
+count the storage gate reads, and it is easy to wire it in without noticing
+the gate moved underneath.
+Root cause: `min_ocr_chars` was being applied to raw text that still carried
+an 11-character `[LOW_CONF] ` prefix per line. Measured on realistic
+captures, cleaning removes 33 to 105 characters (a 4-line note loses exactly
+44), so the same constant means something different before and after.
+Rule: when inserting a transform ahead of a threshold, state which side of
+the transform the threshold reads and why, in a comment at the call site,
+and measure the before/after on realistic fixtures in a test that prints the
+table. Check the gate's rules one by one for which actually depend on the
+transformed value: here only `char_count < min_chars` does, because the
+volume rule is admit-only and confidence/block_count come from Vision, which
+is what bounds the blast radius. Never fix an over-tight gate by loosening
+the constant before you know which rule fires.
+
 ## 2026-09-06 · `target/` grew to 72 GiB and nearly exhausted the disk
 Cost: a session paused at the demo-readiness gate because the machine had 4
 GiB free, blocking any further native build or the human rehearsal.

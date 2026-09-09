@@ -284,6 +284,7 @@ fn skip_reason_code(reason: SkipReason) -> &'static str {
         SkipReason::PerceptualDuplicate => "perceptual_duplicate",
         SkipReason::MissingPerceptualSignature => "missing_perceptual_signature",
         SkipReason::LowSignal => "low_signal",
+        SkipReason::CleanupRemovedAllText => "cleanup_removed_all_text",
         SkipReason::SemanticDuplicate => "semantic_duplicate",
         SkipReason::FinalPrivacy => "final_privacy",
         SkipReason::ScreenRecordingOrCaptureUnavailable => {
