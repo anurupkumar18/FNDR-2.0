@@ -1,0 +1,20 @@
+# T-309 gate replay fixture corpus. One JSON object per non-empty,
+# non-comment line; loaded by `fndr_capture::replay::load_fixtures`.
+# Field reference: see the `ReplayRecord` doc comment in
+# `crates/fndr-capture/src/replay.rs`.
+#
+# This corpus exercises every gate the declarative table governs plus the
+# (non-configurable) pre-capture privacy gate, with a known expected outcome
+# per record documented inline. `crates/fndr-capture/tests/gate_replay.rs`
+# asserts the exact tally against the default gate table and demonstrates a
+# visible per-gate delta when a gate is disabled.
+{"app_name": "Google Chrome", "window_title": "Screenpipe Architecture Deep Dive", "url": "https://docs.screenpi.pe/architecture/memory-cards", "observed_at_ms": 1755660000000, "captured_at_ms": 1755660000000, "pixel_rgb": [30, 30, 30], "ocr_text": "Screenpipe architecture deep dive: capture pipeline stages and the declarative gate policy table explained in detail."}
+{"app_name": "Google Chrome", "window_title": "Search results - YouTube", "url": "https://www.youtube.com/results?search_query=screenpipe", "observed_at_ms": 1755660060000, "captured_at_ms": 1755660060000, "pixel_rgb": [40, 40, 40], "ocr_text": "search results page listing many videos about screenpipe"}
+{"app_name": "Google Chrome", "window_title": "screen_pipe - YouTube", "url": "https://www.youtube.com/@screen_pipe/videos", "observed_at_ms": 1755660120000, "captured_at_ms": 1755660120000, "pixel_rgb": [50, 50, 50], "ocr_text": "channel video listing page"}
+{"app_name": "Finder", "window_title": "Project Files", "observed_at_ms": 1755660180000, "captured_at_ms": 1755660180000, "pixel_rgb": [80, 80, 80], "ocr_text": "Finder window showing project files pipeline.rs gate_policy.rs replay.rs"}
+{"app_name": "Finder", "window_title": "Project Files", "observed_at_ms": 1755660182000, "captured_at_ms": 1755660182000, "pixel_rgb": [80, 80, 80], "ocr_text": "Finder window showing project files pipeline.rs gate_policy.rs replay.rs"}
+{"app_name": "Visual Studio Code", "window_title": "terminal", "observed_at_ms": 1755660240000, "captured_at_ms": 1755660240000, "pixel_rgb": [120, 10, 10], "ocr_text": "ok"}
+{"app_name": "Visual Studio Code", "window_title": "pipeline.rs - fndr-capture", "observed_at_ms": 1755660300000, "captured_at_ms": 1755660300000, "pixel_rgb": [10, 120, 10], "ocr_text": "editing run_tick_inner to consult the declarative gate policy table before returning a skip"}
+{"app_name": "Visual Studio Code", "window_title": "pipeline.rs - fndr-capture", "observed_at_ms": 1755660310000, "captured_at_ms": 1755660310000, "pixel_rgb": [200, 10, 200], "ocr_text": "editing run_tick_inner to consult the declarative gate policy table before returning a skip"}
+{"app_name": "Terminal", "window_title": "cargo test output", "observed_at_ms": 1755660400000, "captured_at_ms": 1755660400000, "pixel_rgb": [5, 5, 80], "ocr_text": "cargo test result: fndr-capture 42 passed 0 failed gate policy table exercised"}
+{"app_name": "1Password", "window_title": "Vault", "observed_at_ms": 1755660460000, "captured_at_ms": 1755660460000, "pixel_rgb": [200, 200, 200], "ocr_text": "vault contents should never reach storage", "private": true}

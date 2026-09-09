@@ -8,8 +8,8 @@
 use std::collections::HashMap;
 
 use crate::{
-    CaptureError, CaptureSurfacePolicy, Frame, FrameSource, PerceptualDeduper, SemanticDedupWindow,
-    classify_capture_surface_policy, semantic_signature,
+    CaptureError, CaptureSurfacePolicy, Frame, FrameSource, GatePolicyTable, PerceptualDeduper,
+    SemanticDedupWindow, classify_capture_surface_policy, semantic_signature,
 };
 
 /// Foreground metadata acquired before any pixel capture.
@@ -49,7 +49,12 @@ pub enum CaptureStage {
 }
 
 /// The single terminal reason counted for a skipped or failed tick.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+///
+/// `PartialOrd`/`Ord` give the variants a stable, deterministic sort order
+/// (their declaration order) so the replay harness (`replay.rs`) can render
+/// a gate report and a before/after delta table without inventing a second
+/// ordering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum SkipReason {
     MetadataUnavailable,
     PreCapturePrivacy,
@@ -148,10 +153,22 @@ pub trait CaptureSink {
 }
 
 /// Scheduler-tunable values which do not change stage ordering.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// `gates` is the declarative policy table (T-309): it decides whether a
+/// firing threshold check (`perceptual_dedup_distance`, `min_ocr_chars`,
+/// `semantic_dedup_window_ms`) or the admission classifier is allowed to
+/// drop the tick, without changing where in the sequence that check runs.
+/// Not `Copy` because `GatePolicyTable` owns a `Vec`; every other field
+/// stays plain data so the common "just override one threshold" case reads
+/// as a small struct update.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CapturePipelineConfig {
     pub min_ocr_chars: usize,
     pub semantic_dedup_window_ms: u64,
+    /// dHash distance below which two frames are perceptual duplicates.
+    /// Was hardcoded via `PerceptualDeduper::default()` before T-309.
+    pub perceptual_dedup_distance: u32,
+    pub gates: GatePolicyTable,
 }
 
 impl Default for CapturePipelineConfig {
@@ -159,6 +176,8 @@ impl Default for CapturePipelineConfig {
         Self {
             min_ocr_chars: 12,
             semantic_dedup_window_ms: 30_000,
+            perceptual_dedup_distance: 5,
+            gates: GatePolicyTable::default(),
         }
     }
 }
@@ -237,10 +256,10 @@ where
             gate,
             ocr,
             sink,
-            config,
-            perceptual_deduper: PerceptualDeduper::default(),
+            perceptual_deduper: PerceptualDeduper::new(config.perceptual_dedup_distance),
             semantic_deduper: SemanticDedupWindow::default(),
             counters: CaptureCounters::default(),
+            config,
         }
     }
 
@@ -274,19 +293,28 @@ where
         }
 
         // Ported classification from FNDR v1 admission.rs at 330a760b; the
-        // loop itself is a clean T-306 rewrite per ADR-005.
+        // loop itself is a clean T-306 rewrite per ADR-005. Whether a
+        // `SkipFrame` verdict actually drops the tick is a declarative gate
+        // policy decision (`self.config.gates`, see `gate_policy.rs`), not
+        // baked into this branch: disabling the `AdmissionPolicy` gate
+        // treats `SkipFrame` the same as `Normal` and lets the tick proceed
+        // to capture, while `UrlOnly` always routes to its own persistence
+        // path regardless of the table (it is not a drop, so it is not a
+        // table entry).
         match classify_capture_surface_policy(
             &context.app_name,
             &context.window_title,
             context.url.as_deref(),
         ) {
-            CaptureSurfacePolicy::SkipFrame => {
+            CaptureSurfacePolicy::SkipFrame
+                if self.config.gates.is_enabled(SkipReason::AdmissionPolicy) =>
+            {
                 return CaptureTickOutcome::Skipped(SkipReason::AdmissionPolicy);
             }
             CaptureSurfacePolicy::UrlOnly => {
                 return self.persist_url_only(&context);
             }
-            CaptureSurfacePolicy::Normal => {}
+            CaptureSurfacePolicy::SkipFrame | CaptureSurfacePolicy::Normal => {}
         }
 
         let frame = match self.frame_source.grab() {
@@ -306,7 +334,13 @@ where
         let Some(signature) = frame.perceptual_signature.clone() else {
             return CaptureTickOutcome::Skipped(SkipReason::MissingPerceptualSignature);
         };
-        if self.perceptual_deduper.should_skip(signature) {
+        // The deduper always observes the signature (its A-B-A loop history
+        // must advance every tick regardless of policy); the gate table
+        // only decides whether a positive result is allowed to drop the
+        // tick.
+        let is_perceptual_duplicate = self.perceptual_deduper.should_skip(signature);
+        if is_perceptual_duplicate && self.config.gates.is_enabled(SkipReason::PerceptualDuplicate)
+        {
             return CaptureTickOutcome::Skipped(SkipReason::PerceptualDuplicate);
         }
 
@@ -319,16 +353,17 @@ where
             Ok(ocr) => ocr,
             Err(error) => return failed(SkipReason::OcrFailed, error),
         };
-        if ocr.low_signal {
+        if ocr.low_signal && self.config.gates.is_enabled(SkipReason::LowSignal) {
             return CaptureTickOutcome::Skipped(SkipReason::LowSignal);
         }
 
         let signature = semantic_signature(&context.app_name, &context.window_title, &ocr.text);
-        if self.semantic_deduper.should_skip(
+        let is_semantic_duplicate = self.semantic_deduper.should_skip(
             signature,
             frame.captured_at_ms,
             self.config.semantic_dedup_window_ms,
-        ) {
+        );
+        if is_semantic_duplicate && self.config.gates.is_enabled(SkipReason::SemanticDuplicate) {
             return CaptureTickOutcome::Skipped(SkipReason::SemanticDuplicate);
         }
 
@@ -344,11 +379,12 @@ where
     fn persist_url_only(&mut self, context: &CaptureContext) -> CaptureTickOutcome {
         let url = context.url.as_deref().unwrap_or_default();
         let signature = semantic_signature(&context.app_name, &context.window_title, url);
-        if self.semantic_deduper.should_skip(
+        let is_semantic_duplicate = self.semantic_deduper.should_skip(
             signature,
             context.observed_at_ms,
             self.config.semantic_dedup_window_ms,
-        ) {
+        );
+        if is_semantic_duplicate && self.config.gates.is_enabled(SkipReason::SemanticDuplicate) {
             return CaptureTickOutcome::Skipped(SkipReason::SemanticDuplicate);
         }
 
@@ -423,6 +459,40 @@ mod tests {
             _min_chars: usize,
         ) -> Result<OcrOutput, PipelineError> {
             Ok(self.0.clone())
+        }
+    }
+
+    /// Returns a different OCR text on each call, so a test with a fixed
+    /// `Context` can still produce distinct semantic-dedup signatures
+    /// across ticks (the pipeline hashes `(app_name, window_title, text)`),
+    /// isolating whatever earlier gate the test is actually exercising.
+    struct DistinctTextOcr(RefCell<VecDeque<&'static str>>);
+
+    impl DistinctTextOcr {
+        fn new(texts: &[&'static str]) -> Self {
+            Self(RefCell::new(texts.iter().copied().collect()))
+        }
+    }
+
+    impl OcrRecognizer for DistinctTextOcr {
+        fn recognize(
+            &self,
+            _png: &[u8],
+            _app_name: &str,
+            _bundle_id: Option<&str>,
+            _min_chars: usize,
+        ) -> Result<OcrOutput, PipelineError> {
+            let text = self
+                .0
+                .borrow_mut()
+                .pop_front()
+                .expect("test supplied enough OCR texts for every tick");
+            Ok(OcrOutput {
+                text: text.to_owned(),
+                confidence: 0.9,
+                block_count: 3,
+                low_signal: false,
+            })
         }
     }
 
@@ -710,5 +780,219 @@ mod tests {
             seen.borrow().clone(),
             Some(("Navegador".to_owned(), Some("com.google.Chrome".to_owned())))
         );
+    }
+
+    // ── Declarative gate policy table (T-309) ───────────────────────────
+    //
+    // These tests prove the table actually controls `run_tick`, not just
+    // that `GatePolicyTable` itself works in isolation (already covered in
+    // `gate_policy.rs`): disabling a gate must let a tick that would
+    // otherwise have been dropped by it reach storage instead, with every
+    // other gate's behavior unchanged.
+
+    #[test]
+    fn disabling_the_admission_gate_lets_a_skip_frame_surface_capture_normally() {
+        let mut config = CapturePipelineConfig::default();
+        config.gates.set_enabled(SkipReason::AdmissionPolicy, false);
+        let mut pipeline = CapturePipeline::new(
+            Context(context(
+                "Google Chrome",
+                "Search results - YouTube",
+                Some("https://www.youtube.com/results?search_query=screenpipe"),
+            )),
+            Frames(RefCell::new(
+                vec![frame(Some(signature([0, 0, 0])), 1_000)].into(),
+            )),
+            Gate(GateDecision::Allow),
+            Ocr(OcrOutput {
+                text: "meaningful captured text".to_owned(),
+                confidence: 0.9,
+                block_count: 3,
+                low_signal: false,
+            }),
+            Sink::default(),
+            config,
+        );
+
+        // With the gate enabled (the default), this exact context is the
+        // `admission::tests::skips_known_navigation_results_pages` fixture
+        // and always drops with `AdmissionPolicy`.
+        assert_eq!(pipeline.run_tick(), CaptureTickOutcome::Stored);
+        assert_eq!(pipeline.sink().captures, 1);
+        assert_eq!(
+            pipeline.counters().skip_count(SkipReason::AdmissionPolicy),
+            0
+        );
+    }
+
+    #[test]
+    fn disabling_perceptual_dedup_stores_frames_the_default_table_would_drop() {
+        let mut config = CapturePipelineConfig::default();
+        config
+            .gates
+            .set_enabled(SkipReason::PerceptualDuplicate, false);
+        let mut pipeline = CapturePipeline::new(
+            Context(context("Finder", "Project", None)),
+            Frames(RefCell::new(
+                vec![
+                    frame(Some(signature([0, 0, 0])), 1_000),
+                    frame(Some(signature([0, 0, 0])), 1_100),
+                ]
+                .into(),
+            )),
+            Gate(GateDecision::Allow),
+            DistinctTextOcr::new(&["meaningful captured text one", "a distinct second capture"]),
+            Sink::default(),
+            config,
+        );
+
+        assert_eq!(pipeline.run_tick(), CaptureTickOutcome::Stored);
+        // Identical pixels would be `PerceptualDuplicate` with the gate on;
+        // disabled, the second tick still reaches OCR and storage. The two
+        // ticks use distinct OCR text so semantic dedup (a separate,
+        // still-enabled gate) does not also catch the second tick and mask
+        // what this test is actually proving.
+        assert_eq!(pipeline.run_tick(), CaptureTickOutcome::Stored);
+        assert_eq!(pipeline.sink().captures, 2);
+        assert_eq!(
+            pipeline
+                .counters()
+                .skip_count(SkipReason::PerceptualDuplicate),
+            0
+        );
+    }
+
+    #[test]
+    fn disabling_low_signal_stores_the_frame_the_ocr_adapter_flagged() {
+        let mut config = CapturePipelineConfig::default();
+        config.gates.set_enabled(SkipReason::LowSignal, false);
+        let mut pipeline = CapturePipeline::new(
+            Context(context("Finder", "Project", None)),
+            Frames(RefCell::new(
+                vec![frame(Some(signature([0, 0, 0])), 1_000)].into(),
+            )),
+            Gate(GateDecision::Allow),
+            Ocr(OcrOutput {
+                text: "short".to_owned(),
+                confidence: 0.9,
+                block_count: 2,
+                low_signal: true,
+            }),
+            Sink::default(),
+            config,
+        );
+
+        assert_eq!(pipeline.run_tick(), CaptureTickOutcome::Stored);
+        assert_eq!(pipeline.sink().captures, 1);
+        assert_eq!(pipeline.counters().skip_count(SkipReason::LowSignal), 0);
+    }
+
+    #[test]
+    fn disabling_semantic_dedup_stores_repeated_content() {
+        let mut config = CapturePipelineConfig::default();
+        config.gates.set_enabled(SkipReason::SemanticDuplicate, false);
+        let mut pipeline = CapturePipeline::new(
+            Context(context("Finder", "Project", None)),
+            Frames(RefCell::new(
+                vec![
+                    frame(Some(signature([0, 0, 0])), 1_000),
+                    frame(Some(signature([255, 0, 0])), 1_100),
+                ]
+                .into(),
+            )),
+            Gate(GateDecision::Allow),
+            Ocr(OcrOutput {
+                text: "meaningful captured text".to_owned(),
+                confidence: 0.9,
+                block_count: 3,
+                low_signal: false,
+            }),
+            Sink::default(),
+            config,
+        );
+
+        assert_eq!(pipeline.run_tick(), CaptureTickOutcome::Stored);
+        // Same (app, title, text) as the first tick; with the gate on this
+        // is `semantic_duplicate_is_counted_after_ocr_without_second_write`
+        // above.
+        assert_eq!(pipeline.run_tick(), CaptureTickOutcome::Stored);
+        assert_eq!(pipeline.sink().captures, 2);
+        assert_eq!(
+            pipeline.counters().skip_count(SkipReason::SemanticDuplicate),
+            0
+        );
+    }
+
+    #[test]
+    fn perceptual_dedup_threshold_is_config_driven_not_hardcoded() {
+        // Two flat-colour frames always hash to the same dHash (a flat
+        // image has no internal gradient), so their perceptual "distance"
+        // is always 0; `colour_guard_keeps_different_flat_fields` in
+        // dedup.rs exists for exactly this reason. Colour distance 22
+        // between the two frames below sits between the deduper's two
+        // colour guards (primary <= 24, A-B-A loop <= 20): the default
+        // threshold (5) clears the primary hash check and stores a
+        // duplicate skip on distance+colour alone, while a caller-supplied
+        // threshold of 0 fails the primary hash check (0 < 0 is false) and
+        // falls through to the loop guard, which distance 22 also fails
+        // (22 > 20). The flip below is therefore driven by
+        // `perceptual_dedup_distance`, not incidental dedup history.
+        let first = [0_u8, 0, 0];
+        let second = [22_u8, 0, 0];
+        let ocr = || OcrOutput {
+            text: "meaningful captured text".to_owned(),
+            confidence: 0.9,
+            block_count: 3,
+            low_signal: false,
+        };
+
+        let mut default_pipeline = CapturePipeline::new(
+            Context(context("Finder", "Project", None)),
+            Frames(RefCell::new(
+                vec![
+                    frame(Some(signature(first)), 1_000),
+                    frame(Some(signature(second)), 1_100),
+                ]
+                .into(),
+            )),
+            Gate(GateDecision::Allow),
+            Ocr(ocr()),
+            Sink::default(),
+            CapturePipelineConfig::default(),
+        );
+        assert_eq!(default_pipeline.run_tick(), CaptureTickOutcome::Stored);
+        assert_eq!(
+            default_pipeline.run_tick(),
+            CaptureTickOutcome::Skipped(SkipReason::PerceptualDuplicate)
+        );
+
+        let mut zero_threshold_config = CapturePipelineConfig::default();
+        zero_threshold_config.perceptual_dedup_distance = 0;
+        let mut zero_threshold_pipeline = CapturePipeline::new(
+            Context(context("Finder", "Project", None)),
+            Frames(RefCell::new(
+                vec![
+                    frame(Some(signature(first)), 1_000),
+                    frame(Some(signature(second)), 1_100),
+                ]
+                .into(),
+            )),
+            Gate(GateDecision::Allow),
+            // Distinct text per tick so semantic dedup (unaffected by
+            // `perceptual_dedup_distance`) does not also catch the second
+            // tick and mask what this test is proving.
+            DistinctTextOcr::new(&["meaningful captured text", "a distinct second capture"]),
+            Sink::default(),
+            zero_threshold_config,
+        );
+        assert_eq!(
+            zero_threshold_pipeline.run_tick(),
+            CaptureTickOutcome::Stored
+        );
+        assert_eq!(
+            zero_threshold_pipeline.run_tick(),
+            CaptureTickOutcome::Stored
+        );
+        assert_eq!(zero_threshold_pipeline.sink().captures, 2);
     }
 }

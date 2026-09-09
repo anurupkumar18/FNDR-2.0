@@ -8,6 +8,10 @@ license.workspace = true
 image = { version = "0.23", default-features = false }
 img_hash = "3.2"
 objc2-app-kit = { version = "0.3", features = ["NSRunningApplication", "NSWorkspace"] }
+# T-309: fixture (de)serialization for the offline gate-policy replay
+# harness (`src/replay.rs`). Not used on the capture hot path.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 thiserror = "2"
 tracing = "0.1"
 # T-302/T-310: exact pin per ADR-001 action item 4. This crate is a

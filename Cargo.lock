@@ -2574,6 +2574,8 @@ dependencies = [
  "img_hash",
  "objc2-app-kit",
  "screencapturekit",
+ "serde",
+ "serde_json",
  "thiserror 2.0.20",
  "tracing",
 ]
