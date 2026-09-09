@@ -347,3 +347,63 @@
   font-size: var(--font-size-body);
   line-height: var(--line-height-normal);
 }
+
+/* Sidebar: the app's one navigation surface. */
+.sidebar {
+  border-right: 1px solid var(--color-surface-border);
+  background: var(--color-surface);
+  padding: var(--space-6) var(--space-4);
+}
+
+.sidebar-brand {
+  margin: 0 0 var(--space-6);
+  color: var(--color-accent);
+  font-size: var(--font-size-title);
+  font-weight: var(--font-weight-bold);
+}
+
+.sidebar-list {
+  display: grid;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.sidebar-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  width: 100%;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  padding: var(--space-2) var(--space-3);
+  color: var(--color-text-secondary);
+  font: inherit;
+  font-size: var(--font-size-body);
+  text-align: left;
+  cursor: pointer;
+}
+
+.sidebar-item[data-active="true"] {
+  background: var(--color-surface-secondary);
+  color: var(--color-text-primary);
+  font-weight: var(--font-weight-semibold);
+}
+
+.sidebar-item:disabled {
+  color: var(--color-text-tertiary);
+  cursor: not-allowed;
+}
+
+.sidebar-item-badge {
+  border-radius: var(--radius-full);
+  background: var(--color-surface-secondary);
+  padding: 2px var(--space-2);
+  color: var(--color-text-tertiary);
+  font-size: var(--font-size-eyebrow);
+  font-weight: var(--font-weight-bold);
+  text-transform: uppercase;
+}
