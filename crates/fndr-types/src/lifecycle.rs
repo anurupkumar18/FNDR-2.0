@@ -28,6 +28,26 @@ pub enum TaskStatus {
     Dismissed = 2,
 }
 
+/// Where one chunk stands relative to the derived Lance index (ADR-002).
+///
+/// SQLite is truth; this records what the derivative currently holds for that
+/// chunk, so the merge/update protocol never has to guess. `Superseded` is
+/// the load-bearing state: it means "a Lance row for this chunk id may exist
+/// and does not match truth", and it is the only state that authorizes a
+/// delete-before-add. Being conservative (claiming a row may exist when it
+/// does not) costs one no-op delete; the opposite leaves a stale row
+/// searchable, so the protocol always errs toward `Superseded`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(i64)]
+pub enum ChunkIndexState {
+    /// No Lance row for this chunk id may be assumed to exist.
+    Pending = 0,
+    /// A Lance row exists and matches this chunk's current text.
+    Indexed = 1,
+    /// A Lance row may exist and does not match truth; delete before add.
+    Superseded = 2,
+}
+
 /// Conversion error carrying the offending value for diagnostics.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnknownDiscriminant {
@@ -77,6 +97,11 @@ discriminant_conversions!(ReviewLifecycle {
     ReviewedDaily,
     ReviewFailed,
 });
+discriminant_conversions!(ChunkIndexState {
+    Pending,
+    Indexed,
+    Superseded,
+});
 discriminant_conversions!(TaskStatus {
     Open,
     Done,
@@ -92,6 +117,10 @@ mod tests {
         for variant in ReviewLifecycle::ALL {
             let raw: i64 = (*variant).into();
             assert_eq!(ReviewLifecycle::try_from(raw).unwrap(), *variant);
+        }
+        for variant in ChunkIndexState::ALL {
+            let raw: i64 = (*variant).into();
+            assert_eq!(ChunkIndexState::try_from(raw).unwrap(), *variant);
         }
         for variant in TaskStatus::ALL {
             let raw: i64 = (*variant).into();
@@ -114,6 +143,9 @@ mod tests {
         assert_eq!(ReviewLifecycle::ReviewedLocal as i64, 2);
         assert_eq!(ReviewLifecycle::ReviewedDaily as i64, 3);
         assert_eq!(ReviewLifecycle::ReviewFailed as i64, 4);
+        assert_eq!(ChunkIndexState::Pending as i64, 0);
+        assert_eq!(ChunkIndexState::Indexed as i64, 1);
+        assert_eq!(ChunkIndexState::Superseded as i64, 2);
         assert_eq!(TaskStatus::Open as i64, 0);
         assert_eq!(TaskStatus::Done as i64, 1);
         assert_eq!(TaskStatus::Dismissed as i64, 2);

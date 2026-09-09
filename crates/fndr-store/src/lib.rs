@@ -8,12 +8,14 @@
 //! real read/write paths replace it in E02/E03.
 
 mod deletion;
+mod indexed_merge;
 mod lance_writer;
 mod migrations;
 mod skeleton;
 mod store;
 
 pub use deletion::{DeletionError, DeletionReport, delete_everywhere};
+pub use indexed_merge::{CaptureMergeOutcome, ContinuityCandidate, IndexStampReport};
 pub use lance_writer::{
     FLUSH_BATCH_SIZE, FLUSH_INTERVAL_SECS_MAX, FLUSH_INTERVAL_SECS_MIN, FlushError, FlushReport,
     LanceWriter, RebuildReport,
@@ -21,7 +23,6 @@ pub use lance_writer::{
 pub use skeleton::{SearchHit, SkeletonStore};
 pub use store::{
     ActivityBucket, AppChange, AuditEntry, CaptureMetadata, ChangeSummary, ChunkEvidence,
-    ChunkSearchHit, DeleteScope, LedgerDecision, NewChunk, NewRecord, PendingChunk,
-    PendingContinuityCandidate, RecordEvidence, ResultFeedback, SEARCH_LIMIT_CAP,
-    SearchExplanation, Store, StoreError, TimelineGranularity,
+    ChunkSearchHit, DeleteScope, LedgerDecision, NewChunk, NewRecord, PendingChunk, RecordEvidence,
+    ResultFeedback, SEARCH_LIMIT_CAP, SearchExplanation, Store, StoreError, TimelineGranularity,
 };

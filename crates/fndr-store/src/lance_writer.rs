@@ -20,6 +20,7 @@ use lancedb::index::scalar::{BTreeIndexBuilder, FtsIndexBuilder};
 use lancedb::table::Table;
 
 use fndr_inference::{EmbedError, Embedder};
+use fndr_types::ChunkIndexState;
 
 use crate::{Store, StoreError};
 
@@ -54,6 +55,14 @@ pub struct FlushReport {
     /// True when the batch was full, meaning more work is likely pending and
     /// the scheduler should run again soon instead of waiting a full cycle.
     pub batch_was_full: bool,
+    /// Chunks in this batch whose stale Lance row was deleted before the new
+    /// one was added (T-307 index repair). Zero on an ordinary flush.
+    pub stale_rows_removed: usize,
+    /// Chunks that were merged while this flush was in flight. They stay
+    /// `Superseded` and the next cycle replaces the row just written. This is
+    /// reported rather than swallowed: a persistently non-zero count means
+    /// merges are outrunning the flush cadence.
+    pub raced_by_merge: usize,
 }
 
 pub struct LanceWriter {
@@ -119,9 +128,13 @@ impl LanceWriter {
         }
     }
 
-    /// Flush up to `FLUSH_BATCH_SIZE` pending chunks: read from SQLite,
-    /// embed, commit one Lance batch, then stamp SQLite. An empty pending
-    /// set returns without touching Lance at all.
+    /// Flush up to `FLUSH_BATCH_SIZE` chunks the index owes work for: read
+    /// from SQLite, embed, delete any stale rows, commit one Lance batch, then
+    /// stamp SQLite. An empty queue returns without touching Lance at all.
+    ///
+    /// This is steps 1 to 4 of the T-307 protocol; the ordering rationale and
+    /// the crash-window analysis for every step live in
+    /// [`crate::indexed_merge`] and are not repeated here.
     pub async fn flush_once(
         &self,
         store: &mut Store,
@@ -133,6 +146,8 @@ impl LanceWriter {
             return Ok(FlushReport {
                 written: 0,
                 batch_was_full: false,
+                stale_rows_removed: 0,
+                raced_by_merge: 0,
             });
         }
 
@@ -152,6 +167,22 @@ impl LanceWriter {
         let table = self
             .open_or_create_table(spec.lance_table, spec.dim)
             .await?;
+
+        // Step 1: drop any stale row before its replacement exists, so the
+        // only legal intermediate state is "row missing", never "two rows".
+        let stale: Vec<String> = pending
+            .iter()
+            .filter(|c| c.index_state == ChunkIndexState::Superseded)
+            .map(|c| c.chunk_id.clone())
+            .collect();
+        let stale_rows_removed = self.delete_chunk_rows(&table, &stale).await?;
+
+        // Step 2: from here on a Lance row for these chunks may exist. This
+        // durable statement is what makes a crash during the add converge
+        // instead of leaving an undetectable duplicate.
+        let batch_ids: Vec<String> = pending.iter().map(|c| c.chunk_id.clone()).collect();
+        store.mark_chunks_indexing(&batch_ids)?;
+
         let schema = Self::chunk_schema(spec.dim);
         let batch = arrow_array::RecordBatch::try_new(
             schema.clone(),
@@ -187,16 +218,37 @@ impl LanceWriter {
             Box::new(RecordBatchIterator::new(vec![Ok(batch)], schema));
         table.add(reader).execute().await?;
 
-        // Only now is the truth stamped; a crash before this line re-flushes
-        // the batch (Lance dedup/compaction is maintenance's problem, and the
-        // rebuild command converges regardless).
-        let ids: Vec<String> = pending.iter().map(|c| c.chunk_id.clone()).collect();
-        store.mark_chunks_flushed(&ids, now_ms)?;
+        // Step 4: only now is the truth stamped, and only for the revision
+        // that was actually embedded. A crash before this line leaves every
+        // chunk `Superseded`, so the next cycle deletes the rows just written
+        // and re-adds them rather than duplicating them.
+        let stamps: Vec<(String, i64)> = pending
+            .iter()
+            .map(|c| (c.chunk_id.clone(), c.revision))
+            .collect();
+        let stamp = store.mark_chunks_indexed(&stamps, now_ms)?;
 
         Ok(FlushReport {
             written: pending.len(),
             batch_was_full: pending.len() == FLUSH_BATCH_SIZE,
+            stale_rows_removed,
+            raced_by_merge: stamp.superseded,
         })
+    }
+
+    /// Delete the derived rows for specific chunk ids. Unlike
+    /// [`Self::delete_records`] this is index repair, not owner deletion:
+    /// SQLite truth keeps the chunk and the next add re-derives its row.
+    async fn delete_chunk_rows(
+        &self,
+        table: &Table,
+        chunk_ids: &[String],
+    ) -> Result<usize, FlushError> {
+        if chunk_ids.is_empty() {
+            return Ok(0);
+        }
+        let predicate = format!("id IN ({})", sql_string_list(chunk_ids));
+        Ok(table.delete(&predicate).await?.num_deleted_rows as usize)
     }
 
     /// Remove the derived rows for records that an owner is deleting. SQLite
@@ -218,12 +270,7 @@ impl LanceWriter {
             Err(lancedb::Error::TableNotFound { .. }) => return Ok(0),
             Err(error) => return Err(error.into()),
         };
-        let ids = record_ids
-            .iter()
-            .map(|id| format!("'{}'", id.replace('\'', "''")))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let predicate = format!("record_id IN ({ids})");
+        let predicate = format!("record_id IN ({})", sql_string_list(record_ids));
         let result = table.delete(&predicate).await?;
         Ok(result.num_deleted_rows as usize)
     }
@@ -259,6 +306,16 @@ impl LanceWriter {
             report.batches += 1;
         }
     }
+}
+
+/// Quote a set of ids for a Lance SQL `IN (...)` predicate. Single quotes are
+/// doubled, so an id containing one cannot change the predicate's shape.
+fn sql_string_list(values: &[String]) -> String {
+    values
+        .iter()
+        .map(|v| format!("'{}'", v.replace('\'', "''")))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

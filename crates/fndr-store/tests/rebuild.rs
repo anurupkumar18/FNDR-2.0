@@ -1,7 +1,13 @@
-//! T-205: crash-recovery and rebuild convergence. The vulnerable window in
-//! the flush protocol is after the Lance commit and before the SQLite stamp;
-//! a crash there re-flushes the batch and duplicates rows in the derived
-//! index. The rebuild command must converge back to exactly SQLite truth.
+//! T-205: rebuild convergence. Rebuild is the universal recovery answer for a
+//! derived index that has drifted from truth for any reason: an interrupted
+//! maintenance pass, a vault written by an older build, or a schema change.
+//!
+//! Note that T-307 closed the specific window this file originally modelled
+//! (a lost SQLite stamp after a successful Lance commit); `tests/
+//! indexed_merge.rs` now proves that window converges without duplicates.
+//! `reset_flush_state` still reproduces the pre-T-307 shape of that drift,
+//! which is exactly the "index holds rows truth no longer accounts for"
+//! condition rebuild exists to fix, so the test stays useful as written.
 
 use std::path::PathBuf;
 
@@ -65,7 +71,7 @@ async fn lance_ids(index_dir: &std::path::Path) -> Vec<String> {
 }
 
 #[tokio::test]
-async fn crash_window_duplicates_then_rebuild_converges_to_truth() {
+async fn a_drifted_index_with_duplicate_rows_rebuilds_back_to_exactly_truth() {
     let dir = scratch("crash");
     let mut store = Store::open(&dir.join("fndr.sqlite3")).unwrap();
     let record = NewRecord {
@@ -92,11 +98,12 @@ async fn crash_window_duplicates_then_rebuild_converges_to_truth() {
     let embedder = TestEmbedder;
     writer.flush_once(&mut store, &embedder, 1).await.unwrap();
 
-    // Simulate the crash window: Lance committed, SQLite stamps lost.
+    // Drive the index into drift: truth forgets that Lance already holds
+    // these rows, so the next flush adds a second copy of every one.
     store.reset_flush_state().unwrap();
     writer.flush_once(&mut store, &embedder, 2).await.unwrap();
     let ids = lance_ids(&dir.join("index")).await;
-    assert_eq!(ids.len(), 10, "crash window produced duplicates (expected)");
+    assert_eq!(ids.len(), 10, "drifted index holds duplicates");
 
     // Rebuild converges back to exactly SQLite truth.
     let report = writer.rebuild(&mut store, &embedder, 3).await.unwrap();

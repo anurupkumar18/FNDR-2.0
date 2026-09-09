@@ -8,7 +8,7 @@ use fndr_privacy::{
     Blocklist, SafetyContext, SafetyDecision, SafetyReason, evaluate, redact_secret_lines,
     sanitize_url_for_storage,
 };
-use fndr_store::{NewChunk, NewRecord, Store, StoreError};
+use fndr_store::{CaptureMergeOutcome, NewChunk, NewRecord, Store, StoreError};
 
 use crate::{ContinuityRecord, merge_story_text, should_merge};
 
@@ -40,6 +40,11 @@ pub enum PersistCaptureOutcome {
     Merged {
         record_id: String,
         redaction_count: usize,
+        /// True when the merged record had already reached Lance, so the next
+        /// flush cycle owes the index a delete-then-add repair (T-307). It is
+        /// reported rather than hidden: the caller can tell a purely-SQLite
+        /// merge from one that leaves the derivative briefly behind truth.
+        index_repair_pending: bool,
     },
     Skipped {
         reason: SafetyReason,
@@ -92,7 +97,10 @@ pub fn persist_capture(
         captured_at_ms: record.captured_at_ms,
     };
     let recent_after = record.captured_at_ms.saturating_sub(45 * 60 * 1_000);
-    for candidate in store.pending_continuity_candidates(recent_after, 64)? {
+    // Candidates are no longer restricted to captures SQLite still owns: an
+    // already-indexed record merges through the T-307 protocol, which repairs
+    // its Lance row on the next flush instead of refusing the merge.
+    for candidate in store.continuity_candidates(recent_after, 64)? {
         let candidate_record = ContinuityRecord {
             app_name: &candidate.app_name,
             url: candidate.url.as_deref(),
@@ -104,11 +112,18 @@ pub fn persist_capture(
         };
         if should_merge(incoming, candidate_record, 0.0).is_some() {
             let merged = merge_story_text(&candidate.text, &text, 6_400);
-            if store.merge_pending_capture(&candidate, &record, &merged)? {
-                return Ok(PersistCaptureOutcome::Merged {
-                    record_id: candidate.record_id,
-                    redaction_count,
-                });
+            match store.merge_capture(&candidate, &record, &merged)? {
+                // Another writer changed this chunk between the read and the
+                // write. Nothing was overwritten; try the next candidate and
+                // otherwise fall through to storing a new record.
+                CaptureMergeOutcome::CandidateChanged => continue,
+                outcome => {
+                    return Ok(PersistCaptureOutcome::Merged {
+                        record_id: candidate.record_id,
+                        redaction_count,
+                        index_repair_pending: outcome.needs_index_repair(),
+                    });
+                }
             }
         }
     }
@@ -321,12 +336,71 @@ mod tests {
             PersistCaptureOutcome::Merged {
                 record_id: "record-1".into(),
                 redaction_count: 0,
+                index_repair_pending: false,
             }
         );
         let pending = store.pending_chunks(10).unwrap();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].record_id, "record-1");
         assert!(pending[0].text.contains("atomic capture merge boundary"));
+        assert_eq!(store.search_chunks("atomic", 10).unwrap().len(), 1);
+    }
+
+    /// T-307: the merge no longer stops at the flush boundary. A candidate
+    /// whose chunk already reached Lance still merges, and the outcome says
+    /// the derived index owes a repair rather than the merge being dropped.
+    #[test]
+    fn a_candidate_already_flushed_to_lance_still_merges_and_asks_for_index_repair() {
+        let mut store = Store::open_in_memory().unwrap();
+        let first = CaptureForPersistence {
+            record_id: "record-1",
+            session_id: "session-1",
+            chunk_id: "chunk-1",
+            source: "screen",
+            app_name: "VS Code",
+            bundle_id: Some("com.microsoft.VSCode"),
+            url: Some("https://docs.example.com/fndr"),
+            window_title: "FNDR continuity design",
+            ocr_text: "Implementing the durable continuity policy and capture merge boundary.",
+            captured_at_ms: 1_000,
+            created_at_ms: 1_000,
+        };
+        let second = CaptureForPersistence {
+            record_id: "record-2",
+            chunk_id: "chunk-2",
+            ocr_text: "Implementing the durable continuity policy and atomic capture merge boundary.",
+            captured_at_ms: 2_000,
+            created_at_ms: 2_000,
+            ..first
+        };
+        persist_capture(&mut store, first, &Blocklist::default()).unwrap();
+        // A flush lands between the two captures: chunk-1 is now indexed.
+        store
+            .mark_chunks_indexed(&[("chunk-1".to_owned(), 1)], 1_500)
+            .unwrap();
+        assert!(store.pending_chunks(10).unwrap().is_empty());
+
+        assert_eq!(
+            persist_capture(&mut store, second, &Blocklist::default()).unwrap(),
+            PersistCaptureOutcome::Merged {
+                record_id: "record-1".into(),
+                redaction_count: 0,
+                index_repair_pending: true,
+            },
+            "before T-307 the racing flush turned this into a second record"
+        );
+
+        // Still one record and one chunk; the chunk is queued for the
+        // delete-then-add repair rather than left silently stale.
+        let pending = store.pending_chunks(10).unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].record_id, "record-1");
+        assert_eq!(
+            pending[0].index_state,
+            fndr_types::ChunkIndexState::Superseded
+        );
+        assert!(pending[0].text.contains("atomic capture merge boundary"));
+        // SQLite FTS, the keyword route, already serves merged truth.
         assert_eq!(store.search_chunks("atomic", 10).unwrap().len(), 1);
     }
 }

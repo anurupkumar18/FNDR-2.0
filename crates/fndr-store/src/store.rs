@@ -20,6 +20,11 @@ pub enum StoreError {
     SchemaTooNew { on_disk: i64, supported: i64 },
     #[error("invalid deletion scope: {0}")]
     InvalidDeleteScope(String),
+    /// A persisted lifecycle discriminant this build does not know. Surfaced
+    /// rather than coerced to a default, so a forward-incompatible row can
+    /// never be silently treated as `Pending` and re-indexed.
+    #[error("corrupt lifecycle value in storage: {0}")]
+    UnknownDiscriminant(String),
 }
 
 pub struct Store {
@@ -62,8 +67,10 @@ pub struct NewChunk {
     pub text: String,
 }
 
-/// A chunk awaiting Lance flush, joined with the record fields that become
-/// prefilter columns.
+/// A chunk the derived index owes work for, joined with the record fields
+/// that become prefilter columns. `index_state` distinguishes a chunk that
+/// has never been indexed from one whose stale Lance row must be deleted
+/// before the replacement is added (T-307, see `indexed_merge`).
 #[derive(Debug, Clone)]
 pub struct PendingChunk {
     pub chunk_id: String,
@@ -72,20 +79,10 @@ pub struct PendingChunk {
     pub text: String,
     pub source: String,
     pub captured_at_ms: i64,
-}
-
-/// A not-yet-indexed record eligible for an in-flight continuity decision.
-/// It is deliberately unavailable once its chunk has reached Lance, avoiding
-/// an unsafe derived-index mutation path.
-#[derive(Debug, Clone)]
-pub struct PendingContinuityCandidate {
-    pub record_id: String,
-    pub chunk_id: String,
-    pub app_name: String,
-    pub url: Option<String>,
-    pub window_title: String,
-    pub text: String,
-    pub captured_at_ms: i64,
+    pub index_state: fndr_types::ChunkIndexState,
+    /// The text revision this row was read at. The flush stamps only this
+    /// revision as indexed, so a merge landing mid-flush is never lost.
+    pub revision: i64,
 }
 
 /// A keyword-route hit from SQLite truth. The retrieval crate owns ranking
@@ -260,12 +257,15 @@ impl Store {
             .query_row("PRAGMA user_version", [], |r| r.get(0))?)
     }
 
-    /// Test access. Domain modules built on this store (T-202+) get their own
-    /// crate-internal accessor when they exist; until then this stays
-    /// test-only rather than shipping unused scaffolding.
-    #[cfg(test)]
+    /// Crate-internal connection access for the domain modules split out of
+    /// this file (currently `indexed_merge`, T-307) and for tests. It stays
+    /// `pub(crate)`: nothing outside `fndr-store` writes SQLite directly.
     pub(crate) fn conn(&self) -> &Connection {
         &self.conn
+    }
+
+    pub(crate) fn conn_mut(&mut self) -> &mut Connection {
+        &mut self.conn
     }
 
     /// Persist one capture: record plus chunks, atomically.
@@ -319,98 +319,6 @@ impl Store {
             .optional()?)
     }
 
-    /// Chunks not yet flushed to Lance, oldest capture first.
-    pub fn pending_chunks(&self, limit: usize) -> Result<Vec<PendingChunk>, StoreError> {
-        let mut stmt = self.conn.prepare(
-            "SELECT c.id, c.record_id, c.ord, c.text, r.source, r.captured_at_ms
-             FROM chunks c JOIN memory_records r ON r.id = c.record_id
-             WHERE c.flushed_at_ms = 0
-             ORDER BY r.captured_at_ms, c.ord
-             LIMIT ?1",
-        )?;
-        let rows = stmt
-            .query_map([limit as i64], |row| {
-                Ok(PendingChunk {
-                    chunk_id: row.get(0)?,
-                    record_id: row.get(1)?,
-                    ord: row.get(2)?,
-                    text: row.get(3)?,
-                    source: row.get(4)?,
-                    captured_at_ms: row.get(5)?,
-                })
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(rows)
-    }
-
-    /// Recent one-chunk records still owned by SQLite's pending queue. This
-    /// supports in-flight continuity only; indexed records require a future
-    /// Lance-safe replacement protocol before their evidence may be edited.
-    pub fn pending_continuity_candidates(
-        &self,
-        captured_after_ms: i64,
-        limit: usize,
-    ) -> Result<Vec<PendingContinuityCandidate>, StoreError> {
-        let mut statement = self.conn.prepare(
-            "SELECT r.id, c.id, r.app_name, r.url, r.window_title, c.text, r.captured_at_ms
-             FROM memory_records r JOIN chunks c ON c.record_id = r.id
-             WHERE c.flushed_at_ms = 0 AND c.ord = 0 AND r.captured_at_ms >= ?1
-             ORDER BY r.captured_at_ms DESC LIMIT ?2",
-        )?;
-        statement
-            .query_map((captured_after_ms, limit.min(64) as i64), |row| {
-                Ok(PendingContinuityCandidate {
-                    record_id: row.get(0)?,
-                    chunk_id: row.get(1)?,
-                    app_name: row.get(2)?,
-                    url: row.get(3)?,
-                    window_title: row.get(4)?,
-                    text: row.get(5)?,
-                    captured_at_ms: row.get(6)?,
-                })
-            })?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(StoreError::from)
-    }
-
-    /// Atomically refresh one unflushed record with its deterministic merged
-    /// text. The original record and chunk IDs survive, so a later Lance flush
-    /// emits exactly one vector row rather than leaving a stale derived row.
-    pub fn merge_pending_capture(
-        &mut self,
-        candidate: &PendingContinuityCandidate,
-        incoming: &NewRecord,
-        merged_text: &str,
-    ) -> Result<bool, StoreError> {
-        let tx = self.conn.transaction()?;
-        let updated_record = tx.execute(
-            "UPDATE memory_records SET app_name = ?1, bundle_id = ?2, url = ?3,
-                    window_title = ?4, captured_at_ms = ?5
-             WHERE id = ?6 AND EXISTS (
-                SELECT 1 FROM chunks WHERE id = ?7 AND record_id = ?6 AND flushed_at_ms = 0
-             )",
-            (
-                &incoming.app_name,
-                &incoming.bundle_id,
-                incoming.url.as_ref().map(SanitizedUrl::as_str),
-                &incoming.window_title,
-                incoming.captured_at_ms,
-                &candidate.record_id,
-                &candidate.chunk_id,
-            ),
-        )?;
-        if updated_record == 0 {
-            tx.rollback()?;
-            return Ok(false);
-        }
-        tx.execute(
-            "UPDATE chunks SET text = ?1 WHERE id = ?2 AND flushed_at_ms = 0",
-            (merged_text, &candidate.chunk_id),
-        )?;
-        tx.commit()?;
-        Ok(true)
-    }
-
     /// Search durable capture chunks through SQLite FTS5. User text becomes a
     /// conjunction of quoted terms, rather than raw FTS syntax, so punctuation
     /// cannot change query semantics or surface an SQLite parse error.
@@ -449,31 +357,6 @@ impl Store {
             )?
             .collect::<Result<Vec<_>, _>>()
             .map_err(StoreError::from)
-    }
-
-    /// Stamp chunks as flushed. Called only after a successful Lance commit;
-    /// a failed flush leaves rows pending so the next cycle retries.
-    pub fn mark_chunks_flushed(
-        &mut self,
-        chunk_ids: &[String],
-        now_ms: i64,
-    ) -> Result<(), StoreError> {
-        let tx = self.conn.transaction()?;
-        for id in chunk_ids {
-            tx.execute(
-                "UPDATE chunks SET flushed_at_ms = ?1 WHERE id = ?2",
-                (now_ms, id),
-            )?;
-        }
-        tx.commit()?;
-        Ok(())
-    }
-
-    /// Reset every chunk to pending (the rebuild path re-flushes everything).
-    pub fn reset_flush_state(&mut self) -> Result<usize, StoreError> {
-        Ok(self
-            .conn
-            .execute("UPDATE chunks SET flushed_at_ms = 0", [])?)
     }
 
     /// Resolve a deletion scope to stable record IDs before touching either

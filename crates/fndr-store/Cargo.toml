@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 fndr-inference = { path = "../fndr-inference" }
 fndr-privacy = { path = "../fndr-privacy" }
+fndr-types = { path = "../fndr-types" }
 rusqlite = { version = "0.40", features = ["bundled"] }
 thiserror = "2"
 # Exact pin per ADR-002 amendment: fast release cadence, no 1.0.
@@ -16,5 +17,4 @@ arrow-schema = "58"
 futures = "0.3"
 
 [dev-dependencies]
-fndr-types = { path = "../fndr-types" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

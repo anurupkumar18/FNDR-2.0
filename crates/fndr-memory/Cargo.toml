@@ -10,4 +10,5 @@ fndr-store = { path = "../fndr-store" }
 
 [dev-dependencies]
 fndr-inference = { path = "../fndr-inference" }
+fndr-types = { path = "../fndr-types" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

@@ -75,3 +75,38 @@ Due diligence confirmed both the failure mode (version/fragment sprawl under sin
 ## Amendment (2026-08-21, T-208 spike result)
 
 The spike measured everything this ADR assumes, from Rust, on a 100k-row 768d fixture: GO on the index design. Measured behavior and the resulting directives for T-202/T-203/T-204 are in `docs/spikes/T-208-lance-findings.md`. The two binding corrections: default prune reclaims nothing for our write pattern (the maintenance scheduler must prune explicitly with `older_than=0` plus `delete_unverified=true`, safe under the instance lock), and IVF_PQ builds are tens of seconds at 100k rows so vector-index creation is background maintenance while BTree and FTS indexes are created with the table.
+
+## Amendment (2026-09-08, T-307 indexed-record update protocol)
+
+This ADR said deletion executes against both stores in one operation, and it
+said nothing about *updating* a record whose derived row already exists.
+Continuity merging needs exactly that, and Lance has no upsert: `Table::add`
+appends, so editing an indexed chunk's text and re-adding it leaves two rows
+for one chunk id. The gap was previously closed by refusing the merge once a
+flush had happened, which made the outcome depend on flush timing and quietly
+dropped the continuity decision.
+
+The protocol now specified: SQLite gains two columns on `chunks`,
+`index_state` (`fndr_types::ChunkIndexState`: `Pending`, `Indexed`,
+`Superseded`) and `revision`. A merge is one SQLite transaction that updates
+truth, bumps `revision`, and moves an indexed chunk to `Superseded`. The flush
+cycle then repairs the derivative: delete the superseded rows by chunk id,
+mark the whole batch `Superseded`, add, and stamp only the revision that was
+actually embedded.
+
+Two consequences worth recording against this ADR's role split:
+
+- **Truth is written first for updates, index first for deletions.** The two
+  orderings are deliberately opposite because the safety properties are. A
+  deletion must never leave searchable content behind; an update must never
+  lose new truth to a crash while repairing a rebuildable index. The full
+  crash-window analysis lives in `crates/fndr-store/src/indexed_merge.rs`.
+- **The derivative still holds nothing unique.** Both new columns are SQLite
+  truth about the index, never index state stored in the index, so `fndr index
+  rebuild` remains a complete recovery; it resets every chunk to `Pending`.
+
+This tightens rather than loosens the crash story: the previously accepted
+"crash between the Lance commit and the SQLite stamp duplicates rows, and
+rebuild converges" window no longer produces duplicates at all, because the
+batch is durably marked `Superseded` before the add. Rebuild remains the
+recovery answer for drift from any other cause.

@@ -11,7 +11,7 @@
 
 mod lifecycle;
 
-pub use lifecycle::{ReviewLifecycle, TaskStatus, UnknownDiscriminant};
+pub use lifecycle::{ChunkIndexState, ReviewLifecycle, TaskStatus, UnknownDiscriminant};
 
 use serde::Serialize;
 use specta::Type;

@@ -2635,6 +2635,7 @@ dependencies = [
  "fndr-inference",
  "fndr-privacy",
  "fndr-store",
+ "fndr-types",
  "tokio",
 ]
 
