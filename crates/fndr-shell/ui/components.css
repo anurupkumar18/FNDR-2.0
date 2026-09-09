@@ -407,3 +407,20 @@
   font-weight: var(--font-weight-bold);
   text-transform: uppercase;
 }
+
+/* Search hint: the idle/loading/empty/error line under the field. */
+.search-hint {
+  margin-top: var(--space-4);
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-body);
+}
+
+.search-hint-muted {
+  margin-top: var(--space-2);
+  color: var(--color-text-tertiary);
+  font-size: var(--font-size-caption);
+}
+
+.search-hint-error {
+  color: var(--color-status-attention-fg);
+}
