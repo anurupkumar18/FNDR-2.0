@@ -10,4 +10,13 @@ fndr-store = { path = "../fndr-store" }
 
 [dev-dependencies]
 fndr-inference = { path = "../fndr-inference" }
+# T-805: the url-only admission surface named in the AC lives in
+# fndr-capture's pure classification function; no cycle, fndr-capture does
+# not depend on fndr-memory or fndr-store.
+fndr-capture = { path = "../fndr-capture" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+# T-805: the adversarial suite opens its own connection straight onto the
+# sqlite file `Store` wrote, bypassing `Store`'s own (curated) read methods,
+# so a bug that only shows up in raw column content is still caught. Same
+# version fndr-store pins, so the two never drift.
+rusqlite = { version = "0.40", features = ["bundled"] }
