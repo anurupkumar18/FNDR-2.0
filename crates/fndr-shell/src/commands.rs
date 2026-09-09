@@ -74,8 +74,8 @@ pub fn recent_audit_entries(
     app: tauri::AppHandle,
     options: tauri::State<'_, crate::app::CaptureLaunchOptions>,
 ) -> Result<Vec<AuditLogEntry>, String> {
-    let data_dir =
-        resolved_data_dir(&app, options.inner()).ok_or_else(|| "audit_log_unavailable".to_owned())?;
+    let data_dir = resolved_data_dir(&app, options.inner())
+        .ok_or_else(|| "audit_log_unavailable".to_owned())?;
     crate::app::recent_audit_entries(&data_dir, crate::app::AUDIT_LOG_LIMIT)
 }
 

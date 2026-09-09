@@ -266,7 +266,8 @@ impl AppNameCache {
             .ok()
             .flatten()
             .map(|evidence| evidence.app_name);
-        self.by_record.insert(record_id.to_owned(), app_name.clone());
+        self.by_record
+            .insert(record_id.to_owned(), app_name.clone());
         app_name
     }
 }
@@ -363,7 +364,10 @@ mod tests {
         assert_eq!(results.vault, MemoryVaultState::NotCreated);
         assert!(results.hits.is_empty());
         assert_eq!(results.query, "kayak");
-        assert!(!paths.database_path.exists(), "search must not create a vault");
+        assert!(
+            !paths.database_path.exists(),
+            "search must not create a vault"
+        );
 
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -409,7 +413,12 @@ mod tests {
         let dir = scratch("both-routes");
         let mut store = Store::open(&dir.join("vault.sqlite3")).unwrap();
         for (record_id, chunk_id, app_name, text) in [
-            ("r-kayak", "c-kayak", "Safari", "the kayak rental opens at nine"),
+            (
+                "r-kayak",
+                "c-kayak",
+                "Safari",
+                "the kayak rental opens at nine",
+            ),
             ("r-other", "c-other", "Notes", "unrelated groceries list"),
         ] {
             store
@@ -453,7 +462,10 @@ mod tests {
         assert_eq!(results.hits[0].route, SearchRoute::Keyword);
         assert_eq!(results.hits[0].chunk_id, "c-kayak");
         assert!(
-            results.hits.iter().any(|hit| hit.route == SearchRoute::Vector),
+            results
+                .hits
+                .iter()
+                .any(|hit| hit.route == SearchRoute::Vector),
             "expected the semantic route to contribute a hit: {:?}",
             results.hits
         );
@@ -509,7 +521,11 @@ mod tests {
     #[test]
     fn no_model_file_means_no_embedder_and_no_worker_thread() {
         let model = ShellSearchModel::default();
-        assert!(model.embedder(Path::new("/tmp/fndr-absent-model.gguf")).is_none());
+        assert!(
+            model
+                .embedder(Path::new("/tmp/fndr-absent-model.gguf"))
+                .is_none()
+        );
     }
 
     #[test]
