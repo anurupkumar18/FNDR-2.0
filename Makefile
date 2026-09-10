@@ -1,7 +1,7 @@
 # Local verification gates. `make test` is the full pass the skill's
 # verification bar and CI both run; keep them in sync.
 
-.PHONY: test lint test-rust test-ui bench clean
+.PHONY: test lint test-rust test-ui bench run-app clean
 
 test: lint test-rust test-ui
 
@@ -25,6 +25,15 @@ bench:
 	cargo run -q -p fndr-bench -- --corpus bench/corpus-sample \
 		--baseline bench/baselines/corpus-sample.fts_baseline.json \
 		--out target/bench-metrics.json
+
+# Build the real app UI and launch the native FNDR host. This is "launch the
+# app" in one command: builds ui/ with Vite into crates/fndr-shell/ui/workspace/,
+# then runs the Tauri host, which opens both the trust window and the new
+# workspace window (see the plan's "Known scope boundaries" for why both).
+run-app:
+	npm --prefix ui ci
+	npm --prefix ui run build
+	cargo run -p fndr-shell
 
 # Debug build output is fully regenerable and untracked; nothing here prunes
 # it, so repeated CARGO_BUILD_JOBS=1 rebuilds can grow target/ past 70 GiB
