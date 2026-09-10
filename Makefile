@@ -16,7 +16,8 @@ test-rust:
 	cargo test --workspace
 
 test-ui:
-	cd ui && npm run typecheck && npm test
+	cd ui && npm run typecheck && npm test && npm run build
+	scripts/check-tauri-build-output.sh
 
 # FTS baseline on the sample corpus (format fixture, not an eval instrument;
 # see bench/README.md). Real corpora and routes land with E05. Fails on any

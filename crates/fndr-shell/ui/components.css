@@ -348,6 +348,16 @@
   line-height: var(--line-height-normal);
 }
 
+/* The matched terms SQLite marks in a keyword snippet. Vector-route
+ * snippets carry no marks, so a highlight is itself an honest route signal.
+ * Mirrors .list-item mark's treatment for the trust window's own results. */
+.result-card-snippet mark {
+  border-radius: var(--radius-sm);
+  padding: 0 var(--space-1);
+  background: var(--color-status-running-bg);
+  color: var(--color-status-running-fg);
+}
+
 /* Sidebar: the app's one navigation surface. */
 .sidebar {
   border-right: 1px solid var(--color-surface-border);

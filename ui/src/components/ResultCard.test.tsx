@@ -24,3 +24,19 @@ test("renders an honest fallback when the app name or timestamp is unknown", () 
   expect(screen.getByText("Unknown app")).toBeInTheDocument();
   expect(screen.getByText("Unknown time")).toBeInTheDocument();
 });
+
+test("highlights the real backend's [bracket] match markers instead of showing them literally", () => {
+  // The store's FTS5 snippet() call wraps each matched term in literal
+  // square brackets (fndr-store::store.rs) -- this is the real wire format,
+  // not a stylistic choice made up for this test.
+  const bracketedHit: MemorySearchHit = {
+    ...hit,
+    snippet: "the suspension [bridge] design",
+  };
+  render(<ResultCard hit={bracketedHit} />);
+
+  const mark = screen.getByText("bridge");
+  expect(mark.tagName).toBe("MARK");
+  expect(screen.queryByText(/\[bridge\]/)).not.toBeInTheDocument();
+  expect(screen.queryByText("[", { exact: false })).not.toBeInTheDocument();
+});

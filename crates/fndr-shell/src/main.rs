@@ -18,7 +18,25 @@ const QUIT_MENU_ID: &str = "quit";
 const SHOW_WINDOW_MENU_ID: &str = "show-window";
 const TOGGLE_PAUSE_MENU_ID: &str = "toggle-pause";
 const MAIN_WINDOW_LABEL: &str = "main";
+// The app's real product surface (search, T-1001). Closing it must hide,
+// not destroy, exactly like `main` -- otherwise there is no way back to it
+// short of quitting and relaunching the whole app, since neither the tray
+// menu nor single-instance re-activation knew about it before this constant
+// existed (see lessons.md 2026-09-09).
+const WORKSPACE_WINDOW_LABEL: &str = "workspace";
 static EXITING: AtomicBool = AtomicBool::new(false);
+
+/// Show and focus every window this app can hide-on-close, by label. Used by
+/// the tray's "Show FNDR" item and single-instance re-activation so both
+/// windows come back the same way they went away, rather than only `main`.
+fn show_all_windows(app: &tauri::AppHandle) {
+    for label in [MAIN_WINDOW_LABEL, WORKSPACE_WINDOW_LABEL] {
+        if let Some(window) = app.get_webview_window(label) {
+            let _ = window.show();
+            let _ = window.set_focus();
+        }
+    }
+}
 
 fn install_tray(app: &tauri::App) -> tauri::Result<()> {
     let show_window = MenuItem::with_id(app, SHOW_WINDOW_MENU_ID, "Show FNDR", true, None::<&str>)?;
@@ -41,12 +59,7 @@ fn install_tray(app: &tauri::App) -> tauri::Result<()> {
         .menu(&menu)
         .tooltip("FNDR capture host")
         .on_menu_event(|app, event| match event.id().as_ref() {
-            SHOW_WINDOW_MENU_ID => {
-                if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
-                    let _ = window.show();
-                    let _ = window.set_focus();
-                }
-            }
+            SHOW_WINDOW_MENU_ID => show_all_windows(app),
             TOGGLE_PAUSE_MENU_ID => {
                 let state = app.state::<ShellCaptureState>();
                 let paused = match state.status().state {
@@ -90,10 +103,7 @@ fn main() {
     let commands = fndr_shell::specta_builder();
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
-            if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
-                let _ = window.show();
-                let _ = window.set_focus();
-            }
+            show_all_windows(app);
         }))
         .manage(ShellCaptureState::default())
         // Registered independently of capture: search is read-only, so a
@@ -135,9 +145,11 @@ fn main() {
             label,
             event: tauri::WindowEvent::CloseRequested { api, .. },
             ..
-        } if label == MAIN_WINDOW_LABEL && !EXITING.load(Ordering::Acquire) => {
+        } if (label == MAIN_WINDOW_LABEL || label == WORKSPACE_WINDOW_LABEL)
+            && !EXITING.load(Ordering::Acquire) =>
+        {
             api.prevent_close();
-            if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
+            if let Some(window) = app.get_webview_window(&label) {
                 let _ = window.hide();
             }
         }
