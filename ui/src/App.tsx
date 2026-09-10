@@ -1,9 +1,12 @@
+import { Sidebar } from "./components/Sidebar";
+import { SearchScreen } from "./screens/SearchScreen";
+
 export function App() {
   return (
     <div className="app-shell">
-      <nav aria-label="FNDR" />
-      <main>
-        <h2>Search</h2>
+      <Sidebar active="search" />
+      <main className="app-content">
+        <SearchScreen />
       </main>
     </div>
   );
