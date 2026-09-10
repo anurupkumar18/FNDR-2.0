@@ -7,6 +7,7 @@
 //! window while an active worker continues in the menu bar.
 
 use fndr_shell::app::{CaptureLaunchOptions, ShellCaptureState, doctor};
+use fndr_shell::search::ShellSearchModel;
 use fndr_types::CaptureRuntimeState;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::Manager;
@@ -95,6 +96,11 @@ fn main() {
             }
         }))
         .manage(ShellCaptureState::default())
+        // Registered independently of capture: search is read-only, so a
+        // person can query what FNDR already remembers without starting
+        // capture first. The model worker inside stays unspawned until the
+        // first search that needs the semantic route.
+        .manage(ShellSearchModel::default())
         .manage(options)
         .invoke_handler(commands.invoke_handler())
         .setup(move |app| {

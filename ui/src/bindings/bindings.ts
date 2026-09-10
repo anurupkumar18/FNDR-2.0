@@ -33,6 +33,21 @@ export const commands = {
 	 *  environment details through the desktop bridge.
 	 */
 	setCapturePaused: (paused: boolean) => typedError<CaptureRuntimeStatus, string>(__TAURI_INVOKE("set_capture_paused", { paused })),
+	/**
+	 *  Search the machine owner's own local memory.
+	 * 
+	 *  This is the person-facing counterpart to the `fndr.search` MCP tool, over
+	 *  the same `fndr-retrieval` routes: until it existed, an agent could query
+	 *  this vault and its owner could not.
+	 * 
+	 *  Read-only and independent of capture: the launch options are managed
+	 *  state, registered whether or not capture was ever started, so a person can
+	 *  search what FNDR already remembers without turning capture on first.
+	 * 
+	 *  `MemorySearchResults` reports whether the semantic route ran (and if not,
+	 *  why), so a keyword-only answer is never presented as the whole answer.
+	 */
+	searchMemories: (query: string, limit: number | null) => typedError<MemorySearchResults, string>(__TAURI_INVOKE("search_memories", { query, limit })),
 };
 
 /* Types */
@@ -106,11 +121,84 @@ export type EngineInfo = {
 };
 
 /**
+ *  One search result shown to the person who owns the machine. Unlike the
+ *  content-free capture status, this deliberately carries the owner's own
+ *  captured text: it is the answer to their own query, on their own machine.
+ */
+export type MemorySearchHit = {
+	record_id: string,
+	chunk_id: string,
+	/**
+	 *  The foreground application the capture came from, when its record is
+	 *  still readable. `None` is rendered as an explicit unknown rather than
+	 *  a guessed or blank app name.
+	 */
+	app_name: string | null,
+	/**  JavaScript-safe IPC timestamp convention: milliseconds as `f64`. */
+	captured_at_ms: number | null,
+	snippet: string,
+	route: SearchRoute,
+};
+
+/**  The result of one owner-facing search over the local vault. */
+export type MemorySearchResults = {
+	/**
+	 *  The query these hits answer, echoed back so a UI can discard a
+	 *  response that arrived after the person kept typing.
+	 */
+	query: string,
+	hits: MemorySearchHit[],
+	vault: MemoryVaultState,
+	vector_route: VectorRouteState,
+};
+
+/**
+ *  Whether a local memory vault exists at all. This separates "you have not
+ *  captured anything yet" from "nothing matched your query", which are the
+ *  two very different reasons a search screen can be empty.
+ */
+export type MemoryVaultState = "ready" | "not_created";
+
+/**
  *  The current result of the non-prompting macOS Screen Recording preflight.
  *  It says nothing about capture itself and is deliberately distinct from the
  *  API that requests permission.
  */
 export type ScreenRecordingAccess = "granted" | "not_granted";
+
+/**
+ *  Which retrieval route produced a hit. Routes are reported per hit rather
+ *  than fused into one score: ADR-006 requires a benchmark before any score
+ *  fusion, so the honest presentation is "keyword found this, the semantic
+ *  route found that", never an invented combined rank.
+ */
+export type SearchRoute = "keyword" | "vector";
+
+/**
+ *  Whether the semantic route actually ran for this query, and if not, why.
+ * 
+ *  Invariant 4 (no silent degradation, PRD P0.11): a keyword-only answer must
+ *  never be presented as the full answer. `fndr.search`'s `SearchOutput` sets
+ *  the same precedent with `vector_route_available`; this widens it into the
+ *  reason, because "no model installed" and "the semantic query failed" call
+ *  for different actions from the person reading the screen.
+ */
+export type VectorRouteState = 
+/**  The semantic route ran; these results include both routes. */
+"available" | 
+/**  No local embedding model file is present, so only keyword search ran. */
+"model_missing" | 
+/**
+ *  The model is present but no Lance index exists yet (nothing captured
+ *  has been flushed to the vector index).
+ */
+"index_missing" | 
+/**
+ *  The semantic route was attempted and failed. The underlying error is
+ *  logged locally and deliberately not returned: shell surfaces report
+ *  stable states, never dependency error text.
+ */
+"failed";
 
 /* Tauri Specta runtime */
 async function typedError<T, E>(result: Promise<T>): Promise<{ status: "ok"; data: T } | { status: "error"; error: E }> {

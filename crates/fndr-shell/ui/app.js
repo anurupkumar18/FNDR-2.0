@@ -9,6 +9,41 @@ const openAuditLogElement = document.querySelector("#open-audit-log");
 const auditDetailElement = document.querySelector("#audit-detail");
 const auditEntriesElement = document.querySelector("#audit-entries");
 const screenRecordingAccessElement = document.querySelector("#screen-recording-access");
+const searchFormElement = document.querySelector("#search-form");
+const searchQueryElement = document.querySelector("#search-query");
+const runSearchElement = document.querySelector("#run-search");
+const searchDetailElement = document.querySelector("#search-detail");
+const searchRouteElement = document.querySelector("#search-route");
+const searchResultsElement = document.querySelector("#search-results");
+
+/* What each VectorRouteState means for the person reading the results. A
+ * keyword-only answer is never presented as the whole answer: every state
+ * below renders, including the healthy one. */
+const VECTOR_ROUTE_NOTES = {
+  available: {
+    state: "running",
+    label: "Keyword + semantic",
+    detail: "Both local retrieval routes ran for this query.",
+  },
+  model_missing: {
+    state: "blocked",
+    label: "Keyword only",
+    detail:
+      "No local embedding model is installed, so semantic matches were not searched. These are exact-text matches only.",
+  },
+  index_missing: {
+    state: "blocked",
+    label: "Keyword only",
+    detail:
+      "The semantic index does not exist yet; it is built the first time capture flushes what it has stored. These are exact-text matches only.",
+  },
+  failed: {
+    state: "failed",
+    label: "Keyword only",
+    detail:
+      "The semantic route failed on this query and FNDR logged the reason locally. These are exact-text matches only.",
+  },
+};
 
 function words(value) {
   return String(value || "unknown").replaceAll("_", " ");
@@ -74,6 +109,71 @@ function renderAuditEntries(entries) {
   }
 }
 
+/* SQLite's FTS5 `snippet()` wraps each matched term in `[` `]` (see
+ * fndr-store's keyword query); the vector route's snippets carry no markers
+ * at all. Rendered with `textContent` only, never `innerHTML`, so captured
+ * text can never inject markup. */
+function renderSnippet(container, text) {
+  container.replaceChildren();
+  const parts = String(text || "").split(/(\[[^\]]*\])/g);
+  for (const part of parts) {
+    if (part.startsWith("[") && part.endsWith("]") && part.length >= 2) {
+      const mark = document.createElement("mark");
+      mark.textContent = part.slice(1, -1);
+      container.append(mark);
+    } else if (part) {
+      container.append(document.createTextNode(part));
+    }
+  }
+}
+
+function renderRouteNote(vectorRoute) {
+  const note = VECTOR_ROUTE_NOTES[vectorRoute] || VECTOR_ROUTE_NOTES.model_missing;
+  searchRouteElement.hidden = false;
+  searchRouteElement.replaceChildren();
+  const pill = document.createElement("span");
+  pill.className = "pill";
+  pill.dataset.state = note.state;
+  pill.textContent = note.label;
+  searchRouteElement.append(pill, document.createTextNode(note.detail));
+}
+
+function renderSearchResults(results) {
+  renderRouteNote(results.vector_route);
+  searchResultsElement.replaceChildren();
+
+  if (results.vault === "not_created") {
+    searchDetailElement.textContent = "FNDR has not captured anything on this machine yet.";
+    searchResultsElement.hidden = true;
+    return;
+  }
+
+  if (results.hits.length === 0) {
+    searchDetailElement.textContent = `No local matches for "${results.query}".`;
+    searchResultsElement.hidden = true;
+    return;
+  }
+
+  searchDetailElement.textContent = `${results.hits.length} local match(es) for "${results.query}".`;
+  searchResultsElement.hidden = false;
+  for (const hit of results.hits) {
+    const item = document.createElement("li");
+    item.className = "list-item";
+
+    const snippet = document.createElement("p");
+    snippet.className = "result-snippet";
+    renderSnippet(snippet, hit.snippet);
+
+    const meta = document.createElement("p");
+    meta.className = "result-meta";
+    const routeLabel = hit.route === "vector" ? "Semantic match" : "Keyword match";
+    meta.textContent = `${routeLabel} • ${hit.app_name || "Unknown app"} • ${formatTimestamp(hit.captured_at_ms)}`;
+
+    item.append(snippet, meta);
+    searchResultsElement.append(item);
+  }
+}
+
 function renderScreenRecordingAccess(access) {
   if (access === "granted") {
     screenRecordingAccessElement.textContent = "Granted. This check did not request capture.";
@@ -94,6 +194,11 @@ async function attachCaptureStatus() {
     detailElement.textContent = "The local FNDR bridge is unavailable in this window.";
     return;
   }
+
+  // Search is read-only and independent of capture: it is enabled as soon as
+  // the bridge exists, regardless of whether capture status below succeeds.
+  searchQueryElement.disabled = false;
+  runSearchElement.disabled = false;
 
   try {
     renderStatus(await tauri.core.invoke("capture_status"));
@@ -150,6 +255,30 @@ pauseToggleElement.addEventListener("click", async () => {
   } catch (error) {
     detailElement.textContent = "FNDR could not change its local capture state.";
     console.error("FNDR pause control failed", error);
+  }
+});
+
+searchFormElement.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const tauri = window.__TAURI__;
+  const query = searchQueryElement.value.trim();
+  if (!query) {
+    return;
+  }
+
+  runSearchElement.disabled = true;
+  searchDetailElement.textContent = "Searching your local memory…";
+  searchRouteElement.hidden = true;
+  searchResultsElement.hidden = true;
+  try {
+    renderSearchResults(await tauri.core.invoke("search_memories", { query }));
+  } catch (error) {
+    searchDetailElement.textContent = "FNDR could not search the local vault.";
+    searchRouteElement.hidden = true;
+    searchResultsElement.hidden = true;
+    console.error("FNDR search failed", error);
+  } finally {
+    runSearchElement.disabled = false;
   }
 });
 

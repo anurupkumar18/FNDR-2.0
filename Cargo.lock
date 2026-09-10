@@ -2679,6 +2679,7 @@ dependencies = [
  "fndr-memory",
  "fndr-ocr",
  "fndr-privacy",
+ "fndr-retrieval",
  "fndr-store",
  "fndr-textsignal",
  "fndr-types",
@@ -2691,6 +2692,7 @@ dependencies = [
  "tauri-plugin-single-instance",
  "tauri-specta",
  "thiserror 2.0.20",
+ "tokio",
 ]
 
 [[package]]

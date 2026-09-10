@@ -6,6 +6,7 @@ pub mod capture_lifecycle;
 pub mod capture_scheduler;
 pub mod capture_worker;
 pub mod commands;
+pub mod search;
 
 use std::error::Error;
 use std::path::Path;
@@ -22,7 +23,8 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
         commands::screen_recording_preflight,
         commands::start_capture,
         commands::recent_audit_entries,
-        commands::set_capture_paused
+        commands::set_capture_paused,
+        commands::search_memories
     ])
 }
 
