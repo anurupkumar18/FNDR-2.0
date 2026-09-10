@@ -5,6 +5,7 @@ target/
 node_modules/
 dist/
 coverage/
+crates/fndr-shell/ui/workspace/
 
 # macOS
 .DS_Store

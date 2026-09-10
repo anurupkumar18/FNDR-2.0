@@ -517,6 +517,110 @@ deleted worktree is not recoverable. When briefing an agent whose run might
 be long or might be interrupted, tell it explicitly to commit incrementally
 as it goes, not only once at the very end.
 
+## 2026-09-09 · `vitest.config.ts`'s `globals: false` breaks RTL's automatic cleanup
+Cost: a "prove it fails" cycle diagnosing an intermittent-looking
+`getByRole` "found multiple elements" failure in the first React component
+test written in `ui/`.
+Root cause: `@testing-library/react`'s automatic per-test DOM cleanup only
+self-registers when it detects a global `afterEach` (`typeof afterEach ===
+"function"`). This project's `vite.config.ts` sets `test.globals: false`
+(explicit imports required, matching the rest of the codebase's style), so
+that global never exists and cleanup silently never runs — multiple tests'
+rendered trees pile up in the same document, and a later `getByRole` query
+for a name used in more than one test matches more than once.
+Rule: any Vitest project with `globals: false` needs an explicit
+`afterEach(() => cleanup())` in a shared `vitest.setup.ts`, not per test
+file. Add it in the same slice as the first component test, not after the
+first mysterious multi-element failure.
+
+## 2026-09-09 · A controlled-component unit test needs a real controller, not a no-op mock
+Cost: a wrong first fix (adding internal `useState`/`useEffect` buffering to
+a presentational `SearchField` component) that was caught and reverted
+before landing, plus a second diagnosis cycle.
+Root cause: a test rendered `<SearchField value="" onChange={vi.fn()} />`
+and typed into it, expecting `onChange` to report the accumulated string
+("rust"). But a no-op mock never feeds the typed value back into the
+`value` prop, so React's controlled-input reconciliation resets the DOM
+value to the fixed prop after each keystroke's event is processed — each
+`onChange` call ends up reporting only the single most-recently-typed
+character. This looks exactly like a component bug (and was first
+misdiagnosed as one) but is a test-authoring bug: no real caller of a
+controlled input behaves like a static value plus a no-op callback.
+Rule: when a controlled-component test needs to verify typed input
+accumulates correctly, wrap the component in a small local stateful helper
+that mimics its real caller (state + a handler that feeds the new value
+back into the prop), not a bare `vi.fn()`. If a test for a controlled
+component fails in a way that looks like "only the last character sticks,"
+suspect the test's mock before the component.
+
+## 2026-09-09 · Vitest fake timers need a `jest` global shim for `waitFor` to work
+Cost: five async tests hanging until Vitest's real outer timeout (~5s each)
+before being diagnosed.
+Root cause: `@testing-library/dom`'s `waitFor` only takes its fake-timer-aware
+polling path when it detects a global `jest` object with specific properties
+(`jestFakeTimersAreEnabled()` checks `typeof jest !== "undefined"` first).
+Vitest's `vi.useFakeTimers()` never defines a `jest` global, so `waitFor`
+always falls back to real-timer polling (`setInterval`) — which is itself
+faked and never fires, so the awaited assertion is never rechecked.
+Rule: any Vitest suite combining `vi.useFakeTimers()` with
+`@testing-library/dom`'s `waitFor` (directly or via RTL) needs
+`globalThis.jest = { advanceTimersByTime: vi.advanceTimersByTime }` in
+`vitest.setup.ts`. Confirmed by reading `@testing-library/dom`'s own
+`helpers.js`/`wait-for.js` source, not just by trying things until tests
+passed.
+
+## 2026-09-09 · A debounced effect must invalidate stale requests on every run, not only on dispatch
+Cost: a code-review-caught, then independently-reproduced Critical bug in a
+newly-written screen, requiring a second implementation pass and a new
+regression test.
+Root cause: a request-id ref (`requestIdRef.current`) was only incremented
+inside the debounced `setTimeout` callback, right before a new request
+dispatched. Clearing the input (an early-return branch that never dispatches
+anything) never bumped the ref, so a slow response from an already-abandoned
+query could still pass the `requestId === requestIdRef.current` staleness
+check and silently overwrite the idle view with stale results or an error
+the person had already moved past.
+Rule: in a debounced-request `useEffect` using a ref-based staleness guard,
+bump the ref unconditionally at the top of every effect run (before any
+early return), capture it once into a local, and only ever compare against
+it afterward (in the timeout callback and in `.then`/`.catch`) — never
+re-increment anywhere but that one place. Write the regression test as
+"dispatch, then abandon before the response arrives, then let the response
+land late" — the version of the race that a scenario like "type fast, retype
+before the first response" won't exercise.
+
+## 2026-09-09 · A Vite/React app that passes every automated check can still render as a blank window in Tauri
+Cost: a fully "done" plan (13 tasks, 20 passing tests, clean `vite build`,
+clean `vite preview` over real HTTP) that rendered as a completely blank
+window the first time it was actually launched as the real native app —
+caught only because the manual verification step in the plan was actually
+run rather than trusted-on-paper, after a first pass had reported it
+"could not verify" the launch and moved on.
+Root cause, two independent bugs neither test nor build caught: (1) Vite's
+default absolute asset base (`/assets/...`) resolves against the webview's
+origin root, not the subfolder (`workspace/`) this window's HTML is served
+from under Tauri's shared `frontendDist` — silently 404s, no visible error.
+(2) Vite's default `crossorigin` attribute on the module script/link tags
+forces a CORS-mode fetch; Tauri's custom asset protocol doesn't return
+`Access-Control-Allow-Origin`, so WKWebView silently discards the script —
+the page loads, CSS applies (the background color visibly changes), but the
+JS module never executes and `<div id="root">` stays empty forever. Neither
+symptom throws anywhere reachable from Rust-side logs, and neither
+reproduces via `vite preview` over real HTTP, since that's genuinely
+same-origin. The only way either bug was visible at all was a screenshot of
+the actual running app window.
+Rule: "the build succeeded and the tests pass" is not evidence a Tauri
+frontend actually renders — a plan's manual-launch verification step is not
+optional busywork, it is the only check that exercises the real asset
+protocol. When an agent reports an environment limitation ("no display,
+can't verify") for a step that claims to test a real GUI launch, don't
+accept the claim at face value if the environment might actually support
+it (check `who`/for an active console session before believing "headless").
+Fixed here with `base: "./"` plus a `transformIndexHtml` plugin that strips
+`crossorigin`; also added `scripts/check-tauri-build-output.sh` (wired into
+CI) so this exact regression class fails a build step instead of only being
+visible in a screenshot.
+
 <!-- Inlined from .claude/skills/fndr-feature-dev/SKILL.md -->
 
 

@@ -281,3 +281,156 @@
   flex-wrap: wrap;
   gap: var(--space-2);
 }
+
+/* Search field: a native-feeling search input, not a generic text box. */
+.search-field {
+  display: block;
+  width: 100%;
+  margin-top: var(--space-4);
+  border: 1px solid var(--color-surface-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-secondary);
+  padding: var(--space-3) var(--space-4);
+  font: inherit;
+  font-size: var(--font-size-body);
+  color: var(--color-text-primary);
+}
+
+.search-field::placeholder {
+  color: var(--color-text-tertiary);
+}
+
+.search-field:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus);
+}
+
+/* Result list and card: one search hit. */
+.result-list {
+  display: grid;
+  gap: var(--space-3);
+  margin: var(--space-5) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.result-card {
+  border: 1px solid var(--color-surface-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  padding: var(--space-4);
+}
+
+.result-card-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.result-card-app {
+  color: var(--color-text-primary);
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-semibold);
+  text-transform: uppercase;
+}
+
+.result-card-time {
+  color: var(--color-text-tertiary);
+  font-size: var(--font-size-caption);
+  white-space: nowrap;
+}
+
+.result-card-snippet {
+  margin: var(--space-2) 0 0;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-body);
+  line-height: var(--line-height-normal);
+}
+
+/* The matched terms SQLite marks in a keyword snippet. Vector-route
+ * snippets carry no marks, so a highlight is itself an honest route signal.
+ * Mirrors .list-item mark's treatment for the trust window's own results. */
+.result-card-snippet mark {
+  border-radius: var(--radius-sm);
+  padding: 0 var(--space-1);
+  background: var(--color-status-running-bg);
+  color: var(--color-status-running-fg);
+}
+
+/* Sidebar: the app's one navigation surface. */
+.sidebar {
+  border-right: 1px solid var(--color-surface-border);
+  background: var(--color-surface);
+  padding: var(--space-6) var(--space-4);
+}
+
+.sidebar-brand {
+  margin: 0 0 var(--space-6);
+  color: var(--color-accent);
+  font-size: var(--font-size-title);
+  font-weight: var(--font-weight-bold);
+}
+
+.sidebar-list {
+  display: grid;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.sidebar-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  width: 100%;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  padding: var(--space-2) var(--space-3);
+  color: var(--color-text-secondary);
+  font: inherit;
+  font-size: var(--font-size-body);
+  text-align: left;
+  cursor: pointer;
+}
+
+.sidebar-item[data-active="true"] {
+  background: var(--color-surface-secondary);
+  color: var(--color-text-primary);
+  font-weight: var(--font-weight-semibold);
+}
+
+.sidebar-item:disabled {
+  color: var(--color-text-tertiary);
+  cursor: not-allowed;
+}
+
+.sidebar-item-badge {
+  border-radius: var(--radius-full);
+  background: var(--color-surface-secondary);
+  padding: 2px var(--space-2);
+  color: var(--color-text-tertiary);
+  font-size: var(--font-size-eyebrow);
+  font-weight: var(--font-weight-bold);
+  text-transform: uppercase;
+}
+
+/* Search hint: the idle/loading/empty/error line under the field. */
+.search-hint {
+  margin-top: var(--space-4);
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-body);
+}
+
+.search-hint-muted {
+  margin-top: var(--space-2);
+  color: var(--color-text-tertiary);
+  font-size: var(--font-size-caption);
+}
+
+.search-hint-error {
+  color: var(--color-status-attention-fg);
+}

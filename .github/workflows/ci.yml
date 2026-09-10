@@ -44,6 +44,9 @@ jobs:
         working-directory: ui
       - run: npm test
         working-directory: ui
+      - run: npm run build
+        working-directory: ui
+      - run: scripts/check-tauri-build-output.sh
 
   guards:
     name: Guards (egress, no-tauri, AGENTS.md drift)

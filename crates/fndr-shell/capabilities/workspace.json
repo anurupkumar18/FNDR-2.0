@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "workspace",
+  "description": "No plugin permissions for FNDR's app workspace window: it calls only custom #[tauri::command] functions (search_memories), which this codebase's capability model does not gate. Add a permission here only when the window actually calls a plugin API, not preemptively.",
+  "windows": ["workspace"],
+  "permissions": []
+}

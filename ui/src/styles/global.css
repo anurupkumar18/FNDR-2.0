@@ -1,0 +1,34 @@
+@import "../../../crates/fndr-shell/ui/tokens.css";
+@import "../../../crates/fndr-shell/ui/components.css";
+
+/* Page layout for this app, mirroring crates/fndr-shell/ui/app.css's role
+ * for the trust window: colors/type/components live in the imported files
+ * above, this file only positions things.
+ */
+
+* {
+  box-sizing: border-box;
+}
+
+:root {
+  color: var(--color-text-primary);
+  background: var(--color-bg);
+  font-family: var(--font-family-base);
+  font-synthesis: none;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+}
+
+.app-shell {
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  min-height: 100vh;
+}
+
+.app-content {
+  padding: var(--space-8);
+  overflow-y: auto;
+}
